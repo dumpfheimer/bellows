@@ -39,8 +39,9 @@ from bellows.zigbee import repairs
 from bellows.zigbee.device import EZSPEndpoint
 import bellows.zigbee.util as util
 
-APS_ACK_TIMEOUT = 120
-RETRY_DELAYS = [0.5, 1.0, 1.5]
+APS_ACK_TIMEOUT = 500
+ROUTE_DISCOVERY_TIMEOUT = 3000
+RETRY_DELAYS = [0, 0, 0, 1.0, 1.0, 1.0, 0]
 COUNTER_EZSP_BUFFERS = "EZSP_FREE_BUFFERS"
 COUNTER_NWK_CONFLICTS = "nwk_conflicts"
 COUNTER_RESET_REQ = "reset_requests"
@@ -742,13 +743,23 @@ class ControllerApplication(zigpy.application.ControllerApplication):
         else:
             aps_frame.groupId = t.uint16_t(0x0000)
 
-        if not self.config[zigpy.config.CONF_SOURCE_ROUTING]:
-            aps_frame.options |= t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
+        # initially do not use route discovery
+        aps_frame.options |= t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
 
         async with self._limit_concurrency():
             message_tag = self.get_sequence()
+            send_status = None
             with self._pending.new(message_tag) as req:
-                for attempt, retry_delay in enumerate(RETRY_DELAYS):
+                i = 0
+                tries = 0
+                while i+1 < len(RETRY_DELAYS):
+                    i += 1
+                    tries += 1
+                    retry_delay = RETRY_DELAYS[i]
+                    attempt = i
+                    if not req._result.done():
+                        req._result.cancel()
+                    req._result = asyncio.Future()
                     async with self._req_lock:
                         if packet.dst.addr_mode == zigpy.types.AddrMode.NWK:
                             if packet.extended_timeout and device is not None:
@@ -788,8 +799,24 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                                 packet.data.serialize(),
                             )
 
+                    LOGGER.debug("Request %s status: %s", message_tag, status)
                     if status == t.EmberStatus.SUCCESS:
-                        break
+                        # Only throw a delivery exception for packets sent with NWK addressing.
+                        # https://github.com/home-assistant/core/issues/79832
+                        # Broadcasts/multicasts don't have ACKs or confirmations either.
+                        LOGGER.debug("Request %s successfully queued", message_tag)
+                        if packet.dst.addr_mode != zigpy.types.AddrMode.NWK or device is None or not device.node_desc.is_router:
+                            LOGGER.debug("Request %s not a NWK request, returning", message_tag)
+                            return
+                        # Wait for `messageSentHandler` message
+                        LOGGER.debug("Request %s a NWK request, waiting for %d ms for response", message_tag, (APS_ACK_TIMEOUT+ROUTE_DISCOVERY_TIMEOUT) if (aps_frame.options & t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY) else APS_ACK_TIMEOUT)
+                        async with asyncio_timeout((APS_ACK_TIMEOUT+ROUTE_DISCOVERY_TIMEOUT) if (aps_frame.options & t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY) else APS_ACK_TIMEOUT):
+                            send_status, _ = await req.result
+                        if send_status == t.EmberStatus.SUCCESS:
+                            LOGGER.debug("Request %s successfull", message_tag)
+                            break
+                        else:
+                            LOGGER.debug("Request %s NOT successfull: %s" %(message_tag, str(send_status)))
                     elif status not in (
                         t.EmberStatus.MAX_MESSAGE_LIMIT_REACHED,
                         t.EmberStatus.NO_BUFFERS,
@@ -799,7 +826,9 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                             f"Failed to enqueue message: {status!r}", status
                         )
                     else:
-                        if attempt < len(RETRY_DELAYS):
+                        i = i - 1
+                        retry_delay = 0.1
+                    if attempt < len(RETRY_DELAYS):
                             LOGGER.debug(
                                 "Request %s failed to enqueue, retrying in %ss: %s",
                                 message_tag,
@@ -807,7 +836,16 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                                 status,
                             )
                             await asyncio.sleep(retry_delay)
+                    if tries > 3:
+                            LOGGER.debug("Request %s has last retry, going with route discovery: %s",
+                                message_tag,
+                                         status
+                                         )
+                            aps_frame.options |= (
+                                    t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
+                                )
                 else:
+                    LOGGER.debug("Request %s to %s failed to complete successfully: %s / %s", message_tag, str(packet.dst.address), status, str(send_status))
                     raise zigpy.exceptions.DeliveryError(
                         (
                             f"Failed to enqueue message after {len(RETRY_DELAYS)}"
@@ -816,19 +854,10 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                         status,
                     )
 
-                # Only throw a delivery exception for packets sent with NWK addressing.
-                # https://github.com/home-assistant/core/issues/79832
-                # Broadcasts/multicasts don't have ACKs or confirmations either.
-                if packet.dst.addr_mode != zigpy.types.AddrMode.NWK:
-                    return
-
-                # Wait for `messageSentHandler` message
-                async with asyncio_timeout(APS_ACK_TIMEOUT):
-                    send_status, _ = await req.result
-
                 if send_status != t.EmberStatus.SUCCESS:
+                    LOGGER.debug("Request %s to %s failed to complete successfully: %s / %s", message_tag, str(packet.dst.address), status, str(send_status))
                     raise zigpy.exceptions.DeliveryError(
-                        f"Failed to deliver message: {send_status!r}", send_status
+                        f"Failed to deliver message {message_tag}: {send_status!r}", send_status
                     )
 
     async def permit(self, time_s: int = 60, node: t.EmberNodeId = None) -> None:

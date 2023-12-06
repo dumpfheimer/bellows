@@ -119,15 +119,46 @@ DEFAULT_CONFIG_NEW = [
     ),
 ] + DEFAULT_CONFIG_COMMON
 
+ADDITIONAL_CONFIG_TEST = [
+
+    ValueConfig(
+        value_id=types_v4.EzspValueId.VALUE_ENABLE_PTA,
+        value=t.uint8_t(1)
+    ),
+    RuntimeConfig(
+        config_id=types_v4.EzspConfigId.CONFIG_APS_ACK_TIMEOUT,
+        value=500
+    ),
+    RuntimeConfig(
+        config_id=types_v4.EzspConfigId.CONFIG_APS_UNICAST_MESSAGE_COUNT,
+        value=32
+    ),
+    RuntimeConfig(
+        config_id=types_v4.EzspConfigId.CONFIG_MTORR_FLOW_CONTROL,
+        value=1
+    ),
+#    RuntimeConfig(
+#        config_id=types_v4.EzspConfigId.CONFIG_RF4CE_PAIRING_TABLE_SIZE,
+#        value=2
+#    ),
+    RuntimeConfig(
+        config_id=types_v4.EzspConfigId.CONFIG_TX_POWER_MODE,
+        value=1
+    ),
+    RuntimeConfig(
+        config_id=types_v4.EzspConfigId.CONFIG_NEIGHBOR_TABLE_SIZE,
+        value=100
+    ),
+] + DEFAULT_CONFIG_NEW
 
 DEFAULT_CONFIG = {
     4: DEFAULT_CONFIG_LEGACY,
     5: DEFAULT_CONFIG_LEGACY,
     6: DEFAULT_CONFIG_LEGACY,
-    7: DEFAULT_CONFIG_NEW,
-    8: DEFAULT_CONFIG_NEW,
-    9: DEFAULT_CONFIG_NEW,
-    10: DEFAULT_CONFIG_NEW,
-    11: DEFAULT_CONFIG_NEW,
-    12: DEFAULT_CONFIG_NEW,
+    7: ADDITIONAL_CONFIG_TEST,
+    8: ADDITIONAL_CONFIG_TEST,
+    9: ADDITIONAL_CONFIG_TEST,
+    10: ADDITIONAL_CONFIG_TEST,
+    11: ADDITIONAL_CONFIG_TEST,
+    12: ADDITIONAL_CONFIG_TEST,
 }
