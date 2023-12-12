@@ -244,4 +244,9 @@ COMMANDS = {
             }.values()
         ),
     ),
+    "setSourceRoute": (
+        0xAE,
+        (t.EmberNodeId, t.uint8_t, t.LVList(t.EmberNodeId),),
+        (t.EmberStatus,),
+    ),
 }

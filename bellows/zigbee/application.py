@@ -736,7 +736,7 @@ class ControllerApplication(zigpy.application.ControllerApplication):
         aps_frame.sourceEndpoint = t.uint8_t(packet.src_ep)
         aps_frame.destinationEndpoint = t.uint8_t(packet.dst_ep or 0)
         aps_frame.options = t.EmberApsOption.APS_OPTION_NONE
-        aps_frame.options |= t.EmberApsOption.APS_OPTION_RETRY
+        #aps_frame.options |= t.EmberApsOption.APS_OPTION_RETRY
 
         if packet.dst.addr_mode == zigpy.types.AddrMode.Group:
             aps_frame.groupId = t.uint16_t(packet.dst.address)
@@ -745,10 +745,17 @@ class ControllerApplication(zigpy.application.ControllerApplication):
 
         # initially do not use route discovery
         aps_frame.options |= t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
+        #aps_frame.options |= t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
+        if device is not None and device.node_desc is not None and device.node_desc.is_end_device and packet.source_route is None:
+            LOGGER.warn("had to add source route to end device %s" % str(packet.dst.address))
+            packet.source_route = super().build_source_route_to(dest=device)
+            LOGGER.warn("had to add source route to end device %s to %s" % (str(packet.dst.address), str(packet.source_route)))
+            await self._ezsp.setExtendedTimeout(device.ieee, True)
 
         async with self._limit_concurrency():
             message_tag = self.get_sequence()
             send_status = None
+            id = "message_tag=%s dest=%s" % (str(message_tag), str(packet.dst.address))
             with self._pending.new(message_tag) as req:
                 i = 0
                 tries = 0
@@ -771,9 +778,8 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                                     packet.dst.address, packet.source_route
                                 )
                             ):
-                                aps_frame.options |= (
-                                    t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
-                                )
+                                aps_frame.options |= t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
+                                aps_frame.options |= t.EmberApsOption.APS_OPTION_RETRY
 
                             status, _ = await self._ezsp.sendUnicast(
                                 t.EmberOutgoingMessageType.OUTGOING_DIRECT,
@@ -799,24 +805,24 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                                 packet.data.serialize(),
                             )
 
-                    LOGGER.debug("Request %s status: %s", message_tag, status)
+                    LOGGER.debug("Request %s status: %s", id, status)
                     if status == t.EmberStatus.SUCCESS:
                         # Only throw a delivery exception for packets sent with NWK addressing.
                         # https://github.com/home-assistant/core/issues/79832
                         # Broadcasts/multicasts don't have ACKs or confirmations either.
-                        LOGGER.debug("Request %s successfully queued", message_tag)
-                        if packet.dst.addr_mode != zigpy.types.AddrMode.NWK or device is None or not device.node_desc.is_router:
-                            LOGGER.debug("Request %s not a NWK request, returning", message_tag)
+                        LOGGER.debug("Request %s successfully queued", id)
+                        if packet.dst.addr_mode != zigpy.types.AddrMode.NWK or device is None or device.node_desc is None or not device.node_desc.is_router:
+                            LOGGER.debug("Request %s not a NWK request, returning", id)
                             return
                         # Wait for `messageSentHandler` message
-                        LOGGER.debug("Request %s a NWK request, waiting for %d ms for response", message_tag, (APS_ACK_TIMEOUT+ROUTE_DISCOVERY_TIMEOUT) if (aps_frame.options & t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY) else APS_ACK_TIMEOUT)
+                        LOGGER.debug("Request %s a NWK request, waiting for %d ms for response", id, (APS_ACK_TIMEOUT+ROUTE_DISCOVERY_TIMEOUT) if (aps_frame.options & t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY) else APS_ACK_TIMEOUT)
                         async with asyncio_timeout((APS_ACK_TIMEOUT+ROUTE_DISCOVERY_TIMEOUT) if (aps_frame.options & t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY) else APS_ACK_TIMEOUT):
                             send_status, _ = await req.result
                         if send_status == t.EmberStatus.SUCCESS:
-                            LOGGER.debug("Request %s successfull", message_tag)
+                            LOGGER.debug("Request %s successfull", id)
                             break
                         else:
-                            LOGGER.debug("Request %s NOT successfull: %s" %(message_tag, str(send_status)))
+                            LOGGER.debug("Request %s NOT successfull: %s" %(id, str(send_status)))
                     elif status not in (
                         t.EmberStatus.MAX_MESSAGE_LIMIT_REACHED,
                         t.EmberStatus.NO_BUFFERS,
@@ -831,21 +837,21 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                     if attempt < len(RETRY_DELAYS):
                             LOGGER.debug(
                                 "Request %s failed to enqueue, retrying in %ss: %s",
-                                message_tag,
+                                id,
                                 retry_delay,
                                 status,
                             )
                             await asyncio.sleep(retry_delay)
                     if tries > 3:
                             LOGGER.debug("Request %s has last retry, going with route discovery: %s",
-                                message_tag,
+                                id,
                                          status
                                          )
                             aps_frame.options |= (
                                     t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
                                 )
                 else:
-                    LOGGER.debug("Request %s to %s failed to complete successfully: %s / %s", message_tag, str(packet.dst.address), status, str(send_status))
+                    LOGGER.debug("Request %s to %s failed to complete successfully: %s / %s", id, str(packet.dst.address), status, str(send_status))
                     raise zigpy.exceptions.DeliveryError(
                         (
                             f"Failed to enqueue message after {len(RETRY_DELAYS)}"
@@ -855,9 +861,9 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                     )
 
                 if send_status != t.EmberStatus.SUCCESS:
-                    LOGGER.debug("Request %s to %s failed to complete successfully: %s / %s", message_tag, str(packet.dst.address), status, str(send_status))
+                    LOGGER.debug("Request %s to %s failed to complete successfully: %s / %s", id, str(packet.dst.address), status, str(send_status))
                     raise zigpy.exceptions.DeliveryError(
-                        f"Failed to deliver message {message_tag}: {send_status!r}", send_status
+                        f"Failed to deliver message {id}: {send_status!r}", send_status
                     )
 
     async def permit(self, time_s: int = 60, node: t.EmberNodeId = None) -> None:
