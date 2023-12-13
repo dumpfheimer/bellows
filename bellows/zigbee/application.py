@@ -661,6 +661,10 @@ class ControllerApplication(zigpy.application.ControllerApplication):
     async def _set_source_route(
         self, nwk: zigpy.types.NWK, relays: list[zigpy.types.NWK]
     ) -> bool:
+        if self._ezsp.ezsp_version >= 12:
+            (res,) = await self._ezsp.setSourceRoute(nwk, len(relays), relays)
+            return res == t.EmberStatus.SUCCESS
+
         if self._ezsp.ezsp_version >= 8:
             # Pretend EmberZNet knows about the device's relays if they are set (i.e. we
             # did not receive a routing error)
@@ -739,7 +743,6 @@ class ControllerApplication(zigpy.application.ControllerApplication):
             aps_frame.groupId = t.uint16_t(0x0000)
 
         # initially do not use route discovery
-        aps_frame.options |= t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
         #aps_frame.options |= t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
         if device is not None and device.node_desc is not None and device.node_desc.is_end_device and packet.source_route is None:
             LOGGER.warn("had to add source route to end device %s" % str(packet.dst.address))
