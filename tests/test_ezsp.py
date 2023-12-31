@@ -545,8 +545,8 @@ async def test_can_rewrite_custom_eui64_old_ezsp(ezsp_f):
 async def test_write_custom_eui64(ezsp_f):
     """Test writing a custom EUI64."""
 
-    old_eui64 = t.EmberEUI64.convert("AA" * 8)
-    new_eui64 = t.EmberEUI64.convert("BB" * 8)
+    old_eui64 = t.EUI64.convert("AA" * 8)
+    new_eui64 = t.EUI64.convert("BB" * 8)
 
     ezsp_f.getEui64 = AsyncMock(return_value=[old_eui64])
     ezsp_f.setMfgToken = AsyncMock(return_value=[t.EmberStatus.SUCCESS])
@@ -614,8 +614,8 @@ async def test_write_custom_eui64(ezsp_f):
 async def test_write_custom_eui64_rcp(ezsp_f):
     """Test writing a custom EUI64 with RPC firmware."""
 
-    old_eui64 = t.EmberEUI64.convert("AA" * 8)
-    new_eui64 = t.EmberEUI64.convert("BB" * 8)
+    old_eui64 = t.EUI64.convert("AA" * 8)
+    new_eui64 = t.EUI64.convert("BB" * 8)
 
     ezsp_f.getEui64 = AsyncMock(return_value=[old_eui64])
     ezsp_f.setMfgToken = AsyncMock(return_value=[t.EmberStatus.INVALID_CALL])
@@ -863,3 +863,12 @@ async def test_reset_custom_eui64(ezsp_f):
     assert ezsp_f.setTokenData.mock_calls == [
         call(t.NV3KeyId.CREATOR_STACK_RESTORED_EUI64, 0, t.LVBytes32(b"\xFF" * 8))
     ]
+
+
+def test_empty_frame_received(ezsp_f):
+    """Test dropping of invalid, empty frames."""
+    ezsp_f._protocol = MagicMock(spec_set=ezsp_f._protocol)
+    ezsp_f._protocol.__call__ = MagicMock()
+    ezsp_f.frame_received(b"")
+
+    assert ezsp_f._protocol.__call__.mock_calls == []
