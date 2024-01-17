@@ -41,7 +41,7 @@ import bellows.zigbee.util as util
 
 APS_ACK_TIMEOUT = 500
 ROUTE_DISCOVERY_TIMEOUT = 3000
-RETRY_DELAYS = [0, 0, 0, 1.0, 1.0, 1.0, 0]
+RETRY_DELAYS = [0, 0, 0, 1.0, 1.0, 1.0, 1.0, 0]
 COUNTER_EZSP_BUFFERS = "EZSP_FREE_BUFFERS"
 COUNTER_NWK_CONFLICTS = "nwk_conflicts"
 COUNTER_RESET_REQ = "reset_requests"
@@ -954,6 +954,13 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                             packet.source_route = None
                             if device is not None:
                                 device.relays = None
+                    if tries > 5:
+                            LOGGER.debug("Request %s will be tried without hops: %s",
+                                id,
+                                retry_delay,
+                                status,
+                            )
+                            packet.source_route = []
                 else:
                     LOGGER.debug("Request %s to %s failed to complete successfully: %s / %s", id, str(packet.dst.address), status, str(send_status))
                     raise zigpy.exceptions.DeliveryError(
