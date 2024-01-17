@@ -776,6 +776,7 @@ class ControllerApplication(zigpy.application.ControllerApplication):
     async def _set_source_route(
         self, nwk: zigpy.types.NWK, relays: list[zigpy.types.NWK]
     ) -> bool:
+        LOGGER.debug("Setting source route for to %s: %s" % (str(nwk), str(relays)))
         (res,) = await self._ezsp.setSourceRoute(nwk, relays)
         return res == t.EmberStatus.SUCCESS
 
@@ -950,6 +951,9 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                             aps_frame.options |= (
                                     t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
                                 )
+                            packet.source_route = None
+                            if device is not None:
+                                device.relays = None
                 else:
                     LOGGER.debug("Request %s to %s failed to complete successfully: %s / %s", id, str(packet.dst.address), status, str(send_status))
                     raise zigpy.exceptions.DeliveryError(
