@@ -246,7 +246,10 @@ COMMANDS = {
     ),
     "setSourceRoute": (
         0xAE,
-        (t.EmberNodeId, t.LVList(t.EmberNodeId),),
+        (
+            t.EmberNodeId,
+            t.LVList[t.EmberNodeId],
+        ),
         (t.EmberStatus,),
     ),
 }
