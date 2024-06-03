@@ -1,5 +1,6 @@
 import pytest
 
+from bellows.ash import DataFrame
 import bellows.ezsp.v8
 
 from .async_mock import AsyncMock, MagicMock, patch
@@ -47,6 +48,20 @@ def test_command_frames(ezsp_f):
         assert ezsp_f.COMMANDS_BY_ID[frame_id][0] == name
 
 
+def test_get_key_table_entry_fallback_parsing(ezsp_f):
+    """Test parsing of a getKeyTableEntry response with an invalid length."""
+    data_frame = DataFrame.from_bytes(
+        bytes.fromhex(
+            "039ba1a9252a1659c6974b25aa55d1209c6e76ddedce958bfdc6f29ffc5e0d2845"
+        )
+    )
+    ezsp_f(data_frame.ezsp_frame)
+
+    assert len(ezsp_f._handle_callback.mock_calls) == 1
+    mock_call = ezsp_f._handle_callback.mock_calls[0]
+    assert mock_call.args[0] == "getKeyTableEntry"
+
+
 command_frames = {
     "addEndpoint": 0x0002,
     "addOrUpdateKeyTableEntry": 0x0066,
@@ -64,7 +79,6 @@ command_frames = {
     "calculateSmacsHandler": 0x00A0,
     "calculateSmacsHandler283k1": 0x00EB,
     "callback": 0x0006,
-    "changeSourceRouteHandler": 0x00C4,
     "childJoinHandler": 0x0023,
     "clearBindingTable": 0x002A,
     "clearKeyTable": 0x00B1,
@@ -164,6 +178,7 @@ command_frames = {
     "incomingBootloadMessageHandler": 0x0092,
     "incomingManyToOneRouteRequestHandler": 0x007D,
     "incomingMessageHandler": 0x0045,
+    "incomingNetworkStatusHandler": 0x00C4,
     "incomingRouteErrorHandler": 0x0080,
     "incomingRouteRecordHandler": 0x0059,
     "incomingSenderEui64Handler": 0x0062,
