@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock, MagicMock, sentinel
+
 import pytest
 from zigpy.endpoint import Endpoint
 
@@ -5,16 +7,20 @@ import bellows.ezsp
 import bellows.multicast
 import bellows.types as t
 
-from .async_mock import AsyncMock, MagicMock, sentinel
+from tests.common import mock_ezsp_commands
 
 CUSTOM_SIZE = 12
 
 
 @pytest.fixture
 def ezsp_f():
-    e = MagicMock()
-    e.getConfigurationValue = AsyncMock(return_value=[0, CUSTOM_SIZE])
-    return e
+    """EZSP v8 protocol handler."""
+    ezsp = bellows.ezsp.v8.EZSPv8(MagicMock(), MagicMock())
+    mock_ezsp_commands(ezsp)
+
+    ezsp.getConfigurationValue.return_value = [t.EmberStatus.SUCCESS, CUSTOM_SIZE]
+
+    return ezsp
 
 
 @pytest.fixture

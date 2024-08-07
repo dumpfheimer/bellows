@@ -52,7 +52,7 @@ def app(f, app_startup=True, extra_config=None):
             zigpy_conf.CONF_DEVICE: {
                 zigpy_conf.CONF_DEVICE_PATH: ctx.obj["device"],
                 zigpy_conf.CONF_DEVICE_BAUDRATE: ctx.obj["baudrate"],
-                zigpy_conf.CONF_FLOW_CONTROL: ctx.obj["flow_control"],
+                zigpy_conf.CONF_DEVICE_FLOW_CONTROL: ctx.obj["flow_control"],
             },
             zigpy_conf.CONF_DATABASE: ctx.obj["database_file"],
         }
@@ -135,11 +135,11 @@ def check(ret, message, expected=0):
 
 
 async def network_init(s):
-    v = await s.networkInit()
+    v = await s.initialize_network()
     check(
-        v[0],
-        f"Failure initializing network: {v[0]}",
-        [0, t.EmberStatus.NOT_JOINED],
+        v,
+        f"Failure initializing network: {v}",
+        t.sl_Status.OK,
     )
     return v
 
@@ -147,7 +147,7 @@ async def network_init(s):
 def parse_epan(epan):
     """Parse a user specified extended PAN ID"""
     epan_list = [t.uint8_t(x, 16) for x in epan.split(":")]
-    return t.fixed_list(8, t.uint8_t)(epan_list)
+    return t.FixedList[t.uint8_t, 8](epan_list)
 
 
 async def basic_tc_permits(s):
@@ -156,16 +156,16 @@ async def basic_tc_permits(s):
         check(v[0], f"Failed to set policy {policy} to {decision}: {v[0]}")
 
     await set_policy(
-        s.types.EzspPolicyId.TC_KEY_REQUEST_POLICY,
-        s.types.EzspDecisionId.DENY_TC_KEY_REQUESTS,
+        t.EzspPolicyId.TC_KEY_REQUEST_POLICY,
+        t.EzspDecisionId.DENY_TC_KEY_REQUESTS,
     )
     await set_policy(
-        s.types.EzspPolicyId.APP_KEY_REQUEST_POLICY,
-        s.types.EzspDecisionId.ALLOW_APP_KEY_REQUESTS,
+        t.EzspPolicyId.APP_KEY_REQUEST_POLICY,
+        t.EzspDecisionId.ALLOW_APP_KEY_REQUESTS,
     )
     await set_policy(
-        s.types.EzspPolicyId.TRUST_CENTER_POLICY,
-        s.types.EzspDecisionId.ALLOW_PRECONFIGURED_KEY_JOINS,
+        t.EzspPolicyId.TRUST_CENTER_POLICY,
+        t.EzspDecisionId.ALLOW_PRECONFIGURED_KEY_JOINS,
     )
 
 

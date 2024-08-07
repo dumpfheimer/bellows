@@ -17,7 +17,7 @@ async def fix_invalid_tclk_partner_ieee(ezsp: EZSP) -> bool:
     ieee = zigpy.types.EUI64(ieee)
 
     (status, state) = await ezsp.getCurrentSecurityState()
-    assert status == t.EmberStatus.SUCCESS
+    assert t.sl_Status.from_ember_status(status) == t.sl_Status.OK
 
     if state.trustCenterLongAddress == ieee:
         return False
@@ -29,23 +29,23 @@ async def fix_invalid_tclk_partner_ieee(ezsp: EZSP) -> bool:
     )
 
     try:
-        (status, value) = await ezsp.getTokenData(
-            t.NV3KeyId.NVM3KEY_STACK_TRUST_CENTER, 0
+        rsp = await ezsp.getTokenData(
+            token=t.NV3KeyId.NVM3KEY_STACK_TRUST_CENTER, index=0
         )
-        assert status == t.EmberStatus.SUCCESS
+        assert t.sl_Status.from_ember_status(rsp.status) == t.sl_Status.OK
     except (InvalidCommandError, AttributeError, AssertionError):
         LOGGER.warning("NV3 interface not available in this firmware, please upgrade!")
         return False
 
-    token, remaining = t.NV3StackTrustCenterToken.deserialize(value)
+    token, remaining = t.NV3StackTrustCenterToken.deserialize(rsp.value)
     assert not remaining
     assert token.eui64 == state.trustCenterLongAddress
 
     (status,) = await ezsp.setTokenData(
-        t.NV3KeyId.NVM3KEY_STACK_TRUST_CENTER,
-        0,
-        token.replace(eui64=ieee).serialize(),
+        token=t.NV3KeyId.NVM3KEY_STACK_TRUST_CENTER,
+        index=0,
+        token_data=token.replace(eui64=ieee).serialize(),
     )
-    assert status == t.EmberStatus.SUCCESS
+    assert t.sl_Status.from_ember_status(status) == t.sl_Status.OK
 
     return True

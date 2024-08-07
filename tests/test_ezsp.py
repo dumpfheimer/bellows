@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import functools
 import logging
@@ -8,7 +10,6 @@ import zigpy.config
 
 from bellows import config, ezsp, uart
 from bellows.exception import EzspError, InvalidCommandError
-import bellows.ezsp.v4.types as v4_t
 import bellows.types as t
 
 if sys.version_info[:2] < (3, 11):
@@ -17,6 +18,8 @@ else:
     from asyncio import timeout as asyncio_timeout  # pragma: no cover
 
 from unittest.mock import ANY, AsyncMock, MagicMock, call, patch, sentinel
+
+from bellows.ezsp.v9.commands import GetTokenDataRsp
 
 DEVICE_CONFIG = {
     zigpy.config.CONF_DEVICE_PATH: "/dev/null",
@@ -109,6 +112,8 @@ async def test_command(ezsp_f):
 
 
 async def test_command_ezsp_stopped(ezsp_f):
+    ezsp_f.stop_ezsp()
+
     with pytest.raises(EzspError):
         await ezsp_f._command("version")
 
@@ -121,42 +126,42 @@ async def _test_list_command(ezsp_f, mockcommand):
 
 
 async def test_list_command(ezsp_f):
-    async def mockcommand(name, *args):
+    async def mockcommand(name, *args, **kwargs):
         assert name == "startScan"
         ezsp_f.frame_received(b"\x01\x00\x1b" + b"\x00" * 20)
         ezsp_f.frame_received(b"\x02\x00\x1b" + b"\x00" * 20)
         ezsp_f.frame_received(b"\x03\x00\x1c" + b"\x00" * 20)
 
-        return [0]
+        return [t.EmberStatus.SUCCESS]
 
     result = await _test_list_command(ezsp_f, mockcommand)
     assert len(result) == 2
 
 
 async def test_list_command_initial_failure(ezsp_f):
-    async def mockcommand(name, *args):
+    async def mockcommand(name, *args, **kwargs):
         assert name == "startScan"
-        return [1]
+        return [t.EmberStatus.FAILURE]
 
     with pytest.raises(Exception):
         await _test_list_command(ezsp_f, mockcommand)
 
 
 async def test_list_command_later_failure(ezsp_f):
-    async def mockcommand(name, *args):
+    async def mockcommand(name, *args, **kwargs):
         assert name == "startScan"
         ezsp_f.frame_received(b"\x01\x00\x1b" + b"\x00" * 20)
         ezsp_f.frame_received(b"\x02\x00\x1b" + b"\x00" * 20)
         ezsp_f.frame_received(b"\x03\x00\x1c\x01\x01")
 
-        return [0]
+        return [t.EmberStatus.SUCCESS]
 
     with pytest.raises(Exception):
         await _test_list_command(ezsp_f, mockcommand)
 
 
 async def _test_form_network(ezsp_f, initial_result, final_result):
-    async def mockcommand(name, *args):
+    async def mockcommand(name, *args, **kwargs):
         assert name == "formNetwork"
         ezsp_f.frame_received(b"\x01\x00\x19" + final_result)
         return initial_result
@@ -167,23 +172,24 @@ async def _test_form_network(ezsp_f, initial_result, final_result):
 
 
 async def test_form_network(ezsp_f):
-    await _test_form_network(ezsp_f, [0], b"\x90")
+    await _test_form_network(ezsp_f, [t.EmberStatus.SUCCESS], b"\x90")
 
 
 async def test_form_network_fail(ezsp_f):
     with pytest.raises(Exception):
-        await _test_form_network(ezsp_f, [1], b"\x90")
+        await _test_form_network(ezsp_f, [t.EmberStatus.FAILURE], b"\x90")
 
 
+@patch("bellows.ezsp.NETWORK_OPS_TIMEOUT", 0.1)
 async def test_form_network_fail_stack_status(ezsp_f):
     with pytest.raises(Exception):
-        await _test_form_network(ezsp_f, [0], b"\x00")
+        await _test_form_network(ezsp_f, [t.EmberStatus.SUCCESS], b"\x00")
 
 
 def test_receive_new(ezsp_f):
     callback = MagicMock()
     ezsp_f.add_callback(callback)
-    ezsp_f.frame_received(b"\x00\xff\x00\x04\x05\x06")
+    ezsp_f.frame_received(b"\x00\xff\x00\x04\x05\x06\x00")
     assert callback.call_count == 1
 
 
@@ -227,7 +233,7 @@ def test_callback_exc(ezsp_f):
 
 @pytest.mark.parametrize("version, call_count", ((4, 1), (5, 2), (6, 2), (99, 2)))
 async def test_change_version(ezsp_f, version, call_count):
-    def mockcommand(name, *args):
+    def mockcommand(name, *args, **kwargs):
         assert name == "version"
         ezsp_f.frame_received(b"\x01\x00\x00\x21\x22\x23\x24")
         fut = asyncio.Future()
@@ -315,12 +321,58 @@ async def test_ezsp_newer_version(ezsp_f):
         await ezsp_f.version()
 
 
-async def test_board_info(ezsp_f):
+@pytest.mark.parametrize(
+    (
+        "mfg_board_name",
+        "mfg_string",
+        "value_version_info",
+        "expected",
+    ),
+    [
+        (
+            (b"\xfe\xff\xff\xff",),
+            (b"Manufacturer\xff\xff\xff",),
+            (t.EmberStatus.SUCCESS, b"\x01\x02\x03\x04\x05\x06"),
+            ("Manufacturer", "0xFE", "3.4.5.6 build 513"),
+        ),
+        (
+            (b"\xfe\xff\xff\xff",),
+            (b"Manufacturer\xff\xff\xff",),
+            (t.EmberStatus.ERR_FATAL, b"\x01\x02\x03\x04\x05\x06"),
+            ("Manufacturer", "0xFE", None),
+        ),
+        (
+            (b"SkyBlue v0.1\x00\xff\xff\xff",),
+            (b"Nabu Casa\x00\xff\xff\xff\xff\xff\xff",),
+            (t.EmberStatus.SUCCESS, b"\xbf\x00\x07\x01\x00\x00\xaa"),
+            ("Nabu Casa", "SkyBlue v0.1", "7.1.0.0 build 191"),
+        ),
+        (
+            (b"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff",),
+            (b"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff",),
+            (t.EmberStatus.SUCCESS, b"\xbf\x00\x07\x01\x00\x00\xaa"),
+            (None, None, "7.1.0.0 build 191"),
+        ),
+        (
+            (b"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff",),
+            (b"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x00\x00",),
+            (t.EmberStatus.SUCCESS, b")\x01\x06\n\x03\x00\xaa"),
+            (None, None, "6.10.3.0 build 297"),
+        ),
+    ],
+)
+async def test_board_info(
+    ezsp_f,
+    mfg_board_name: bytes,
+    mfg_string: bytes,
+    value_version_info: tuple[t.EmberStatus, bytes],
+    expected: tuple[str | None, str | None, str],
+):
     """Test getting board info."""
 
     def cmd_mock(config):
-        async def replacement(*args):
-            return tuple(config[args])
+        async def replacement(command_name, tokenId=None, valueId=None):
+            return config[command_name, tokenId or valueId]
 
         return replacement
 
@@ -329,92 +381,15 @@ async def test_board_info(ezsp_f):
         "_command",
         new=cmd_mock(
             {
-                ("getMfgToken", t.EzspMfgTokenId.MFG_BOARD_NAME): (
-                    b"\xfe\xff\xff\xff",
-                ),
-                ("getMfgToken", t.EzspMfgTokenId.MFG_STRING): (
-                    b"Manufacturer\xff\xff\xff",
-                ),
-                ("getValue", ezsp_f.types.EzspValueId.VALUE_VERSION_INFO): (
-                    0x00,
-                    b"\x01\x02\x03\x04\x05\x06",
-                ),
+                ("getMfgToken", t.EzspMfgTokenId.MFG_BOARD_NAME): mfg_board_name,
+                ("getMfgToken", t.EzspMfgTokenId.MFG_STRING): mfg_string,
+                ("getValue", t.EzspValueId.VALUE_VERSION_INFO): value_version_info,
             }
         ),
     ):
         mfg, brd, ver = await ezsp_f.get_board_info()
 
-    assert mfg == "Manufacturer"
-    assert brd == "0xFE"
-    assert ver == "3.4.5.6 build 513"
-
-    with patch.object(
-        ezsp_f,
-        "_command",
-        new=cmd_mock(
-            {
-                ("getMfgToken", t.EzspMfgTokenId.MFG_BOARD_NAME): (
-                    b"\xfe\xff\xff\xff",
-                ),
-                ("getMfgToken", t.EzspMfgTokenId.MFG_STRING): (
-                    b"Manufacturer\xff\xff\xff",
-                ),
-                ("getValue", ezsp_f.types.EzspValueId.VALUE_VERSION_INFO): (
-                    0x01,
-                    b"\x01\x02\x03\x04\x05\x06",
-                ),
-            }
-        ),
-    ):
-        mfg, brd, ver = await ezsp_f.get_board_info()
-
-    assert mfg == "Manufacturer"
-    assert brd == "0xFE"
-    assert ver is None
-
-    with patch.object(
-        ezsp_f,
-        "_command",
-        new=cmd_mock(
-            {
-                ("getMfgToken", t.EzspMfgTokenId.MFG_BOARD_NAME): (
-                    b"SkyBlue v0.1\x00\xff\xff\xff",
-                ),
-                ("getMfgToken", t.EzspMfgTokenId.MFG_STRING): (
-                    b"Nabu Casa\x00\xff\xff\xff\xff\xff\xff",
-                ),
-                ("getValue", ezsp_f.types.EzspValueId.VALUE_VERSION_INFO): (
-                    0x00,
-                    b"\xbf\x00\x07\x01\x00\x00\xaa",
-                ),
-            }
-        ),
-    ):
-        mfg, brd, ver = await ezsp_f.get_board_info()
-
-    assert mfg == "Nabu Casa"
-    assert brd == "SkyBlue v0.1"
-    assert ver == "7.1.0.0 build 191"
-
-    with patch.object(
-        ezsp_f,
-        "_command",
-        new=cmd_mock(
-            {
-                ("getMfgToken", t.EzspMfgTokenId.MFG_BOARD_NAME): (b"\xff" * 16,),
-                ("getMfgToken", t.EzspMfgTokenId.MFG_STRING): (b"\xff" * 16,),
-                ("getValue", ezsp_f.types.EzspValueId.VALUE_VERSION_INFO): (
-                    0x00,
-                    b"\xbf\x00\x07\x01\x00\x00\xaa",
-                ),
-            }
-        ),
-    ):
-        mfg, brd, ver = await ezsp_f.get_board_info()
-
-    assert mfg is None
-    assert brd is None
-    assert ver == "7.1.0.0 build 191"
+    assert (mfg, brd, ver) == expected
 
 
 async def test_pre_permit(ezsp_f):
@@ -434,11 +409,11 @@ async def test_update_policies(ezsp_f):
 async def test_set_source_routing_set_concentrator(ezsp_f):
     """Test enabling source routing."""
     with patch.object(ezsp_f, "setConcentrator", new=AsyncMock()) as cnc_mock:
-        cnc_mock.return_value = (ezsp_f.types.EmberStatus.SUCCESS,)
+        cnc_mock.return_value = (t.EmberStatus.SUCCESS,)
         await ezsp_f.set_source_routing()
         assert cnc_mock.await_count == 1
 
-        cnc_mock.return_value = (ezsp_f.types.EmberStatus.ERR_FATAL,)
+        cnc_mock.return_value = (t.EmberStatus.ERR_FATAL,)
         await ezsp_f.set_source_routing()
         assert cnc_mock.await_count == 2
 
@@ -447,7 +422,7 @@ async def test_set_source_routing_ezsp_v8(ezsp_f):
     """Test enabling source routing on EZSPv8."""
 
     ezsp_f._ezsp_version = 8
-    ezsp_f.setConcentrator = AsyncMock(return_value=(ezsp_f.types.EmberStatus.SUCCESS,))
+    ezsp_f.setConcentrator = AsyncMock(return_value=(t.EmberStatus.SUCCESS,))
     ezsp_f.setSourceRouteDiscoveryMode = AsyncMock()
 
     await ezsp_f.set_source_routing()
@@ -500,7 +475,9 @@ async def test_can_burn_userdata_custom_eui64(ezsp_f, value, expected_result):
 
     assert await ezsp_f.can_burn_userdata_custom_eui64() == expected_result
 
-    ezsp_f.getMfgToken.assert_called_once_with(t.EzspMfgTokenId.MFG_CUSTOM_EUI_64)
+    ezsp_f.getMfgToken.assert_called_once_with(
+        tokenId=t.EzspMfgTokenId.MFG_CUSTOM_EUI_64
+    )
 
 
 @pytest.mark.parametrize(
@@ -522,11 +499,11 @@ async def test_can_burn_userdata_custom_eui64(ezsp_f, value, expected_result):
 async def test_can_rewrite_custom_eui64(ezsp_f, tokens, expected_key, expected_result):
     """Test detecting if a custom EUI64 can be rewritten in NV3."""
 
-    def get_token_data(key, index):
-        if key not in tokens or index != 0:
-            return [t.EmberStatus.ERR_FATAL, b""]
+    def get_token_data(token, index):
+        if token not in tokens or index != 0:
+            return GetTokenDataRsp(status=t.EmberStatus.ERR_FATAL)
 
-        return [t.EmberStatus.SUCCESS, tokens[key]]
+        return GetTokenDataRsp(status=t.EmberStatus.SUCCESS, value=tokens[token])
 
     ezsp_f.getTokenData = AsyncMock(side_effect=get_token_data)
 
@@ -592,7 +569,7 @@ async def test_write_custom_eui64(ezsp_f):
     await ezsp_f.write_custom_eui64(new_eui64, burn_into_userdata=True)
 
     ezsp_f.setMfgToken.assert_called_once_with(
-        t.EzspMfgTokenId.MFG_CUSTOM_EUI_64, new_eui64.serialize()
+        tokenId=t.EzspMfgTokenId.MFG_CUSTOM_EUI_64, tokenData=new_eui64.serialize()
     )
     ezsp_f.setTokenData.assert_not_called()
 
@@ -623,7 +600,9 @@ async def test_write_custom_eui64_rcp(ezsp_f):
 
     # RCP firmware does not support manufacturing tokens
     ezsp_f.getMfgToken = AsyncMock(return_value=[b""])
-    ezsp_f.getTokenData = AsyncMock(return_value=[t.EmberStatus.SUCCESS, b"\xFF" * 8])
+    ezsp_f.getTokenData = AsyncMock(
+        return_value=GetTokenDataRsp(status=t.EmberStatus.SUCCESS, value=b"\xFF" * 8)
+    )
 
     await ezsp_f.write_custom_eui64(new_eui64)
 
@@ -692,26 +671,26 @@ async def test_ezsp_init_zigbeed_timeout(conn_mock, reset_mock, version_mock):
 
 
 async def test_wait_for_stack_status(ezsp_f):
-    assert not ezsp_f._stack_status_listeners[t.EmberStatus.NETWORK_DOWN]
+    assert not ezsp_f._stack_status_listeners[t.sl_Status.NETWORK_DOWN]
 
     # Cancellation clears handlers
-    with ezsp_f.wait_for_stack_status(t.EmberStatus.NETWORK_DOWN) as stack_status:
+    with ezsp_f.wait_for_stack_status(t.sl_Status.NETWORK_DOWN) as stack_status:
         with pytest.raises(asyncio.TimeoutError):
             async with asyncio_timeout(0.1):
-                assert ezsp_f._stack_status_listeners[t.EmberStatus.NETWORK_DOWN]
+                assert ezsp_f._stack_status_listeners[t.sl_Status.NETWORK_DOWN]
                 await stack_status
 
-    assert not ezsp_f._stack_status_listeners[t.EmberStatus.NETWORK_DOWN]
+    assert not ezsp_f._stack_status_listeners[t.sl_Status.NETWORK_DOWN]
 
     # Receiving multiple also works
-    with ezsp_f.wait_for_stack_status(t.EmberStatus.NETWORK_DOWN) as stack_status:
+    with ezsp_f.wait_for_stack_status(t.sl_Status.NETWORK_DOWN) as stack_status:
         ezsp_f.handle_callback("stackStatusHandler", [t.EmberStatus.NETWORK_UP])
         ezsp_f.handle_callback("stackStatusHandler", [t.EmberStatus.NETWORK_DOWN])
         ezsp_f.handle_callback("stackStatusHandler", [t.EmberStatus.NETWORK_DOWN])
 
         await stack_status
 
-    assert not ezsp_f._stack_status_listeners[t.EmberStatus.NETWORK_DOWN]
+    assert not ezsp_f._stack_status_listeners[t.sl_Status.NETWORK_DOWN]
 
 
 def test_ezsp_versions(ezsp_f):
@@ -731,27 +710,27 @@ async def test_config_initialize_husbzb1(ezsp_f):
     ezsp_f.networkState = AsyncMock(return_value=(t.EmberNetworkStatus.JOINED_NETWORK,))
 
     expected_calls = [
-        call(v4_t.EzspConfigId.CONFIG_SOURCE_ROUTE_TABLE_SIZE, 16),
-        call(v4_t.EzspConfigId.CONFIG_END_DEVICE_POLL_TIMEOUT, 60),
-        call(v4_t.EzspConfigId.CONFIG_END_DEVICE_POLL_TIMEOUT_SHIFT, 8),
-        call(v4_t.EzspConfigId.CONFIG_INDIRECT_TRANSMISSION_TIMEOUT, 7680),
-        call(v4_t.EzspConfigId.CONFIG_STACK_PROFILE, 2),
-        call(v4_t.EzspConfigId.CONFIG_SUPPORTED_NETWORKS, 1),
-        call(v4_t.EzspConfigId.CONFIG_MULTICAST_TABLE_SIZE, 16),
-        call(v4_t.EzspConfigId.CONFIG_TRUST_CENTER_ADDRESS_CACHE_SIZE, 2),
-        call(v4_t.EzspConfigId.CONFIG_SECURITY_LEVEL, 5),
-        call(v4_t.EzspConfigId.CONFIG_ADDRESS_TABLE_SIZE, 16),
-        call(v4_t.EzspConfigId.CONFIG_PAN_ID_CONFLICT_REPORT_THRESHOLD, 2),
-        call(v4_t.EzspConfigId.CONFIG_KEY_TABLE_SIZE, 4),
-        call(v4_t.EzspConfigId.CONFIG_MAX_END_DEVICE_CHILDREN, 32),
+        call(configId=t.EzspConfigId.CONFIG_SOURCE_ROUTE_TABLE_SIZE, value=16),
+        call(configId=t.EzspConfigId.CONFIG_END_DEVICE_POLL_TIMEOUT, value=60),
+        call(configId=t.EzspConfigId.CONFIG_END_DEVICE_POLL_TIMEOUT_SHIFT, value=8),
+        call(configId=t.EzspConfigId.CONFIG_INDIRECT_TRANSMISSION_TIMEOUT, value=7680),
+        call(configId=t.EzspConfigId.CONFIG_STACK_PROFILE, value=2),
+        call(configId=t.EzspConfigId.CONFIG_SUPPORTED_NETWORKS, value=1),
+        call(configId=t.EzspConfigId.CONFIG_MULTICAST_TABLE_SIZE, value=16),
+        call(configId=t.EzspConfigId.CONFIG_TRUST_CENTER_ADDRESS_CACHE_SIZE, value=2),
+        call(configId=t.EzspConfigId.CONFIG_SECURITY_LEVEL, value=5),
+        call(configId=t.EzspConfigId.CONFIG_ADDRESS_TABLE_SIZE, value=16),
+        call(configId=t.EzspConfigId.CONFIG_PAN_ID_CONFLICT_REPORT_THRESHOLD, value=2),
+        call(configId=t.EzspConfigId.CONFIG_KEY_TABLE_SIZE, value=4),
+        call(configId=t.EzspConfigId.CONFIG_MAX_END_DEVICE_CHILDREN, value=32),
         call(
-            v4_t.EzspConfigId.CONFIG_APPLICATION_ZDO_FLAGS,
-            (
-                v4_t.EmberZdoConfigurationFlags.APP_HANDLES_UNSUPPORTED_ZDO_REQUESTS
-                | v4_t.EmberZdoConfigurationFlags.APP_RECEIVES_SUPPORTED_ZDO_REQUESTS
+            configId=t.EzspConfigId.CONFIG_APPLICATION_ZDO_FLAGS,
+            value=(
+                t.EmberZdoConfigurationFlags.APP_HANDLES_UNSUPPORTED_ZDO_REQUESTS
+                | t.EmberZdoConfigurationFlags.APP_RECEIVES_SUPPORTED_ZDO_REQUESTS
             ),
         ),
-        call(v4_t.EzspConfigId.CONFIG_PACKET_BUFFER_COUNT, 255),
+        call(configId=t.EzspConfigId.CONFIG_PACKET_BUFFER_COUNT, value=255),
     ]
 
     await ezsp_f.write_config({})
@@ -828,7 +807,7 @@ async def test_cfg_initialize_skip(ezsp_f):
         # Config not set when it is explicitly disabled
         with pytest.raises(AssertionError):
             ezsp_f.setConfigurationValue.assert_called_with(
-                v4_t.EzspConfigId.CONFIG_END_DEVICE_POLL_TIMEOUT, ANY
+                configId=t.EzspConfigId.CONFIG_END_DEVICE_POLL_TIMEOUT, value=ANY
             )
 
     with p1, p2:
@@ -836,7 +815,7 @@ async def test_cfg_initialize_skip(ezsp_f):
 
         # Config is overridden
         ezsp_f.setConfigurationValue.assert_any_call(
-            v4_t.EzspConfigId.CONFIG_MULTICAST_TABLE_SIZE, 123
+            configId=t.EzspConfigId.CONFIG_MULTICAST_TABLE_SIZE, value=123
         )
 
     with p1, p2:
@@ -844,7 +823,7 @@ async def test_cfg_initialize_skip(ezsp_f):
 
         # Config is set by default
         ezsp_f.setConfigurationValue.assert_any_call(
-            v4_t.EzspConfigId.CONFIG_END_DEVICE_POLL_TIMEOUT, ANY
+            configId=t.EzspConfigId.CONFIG_END_DEVICE_POLL_TIMEOUT, value=ANY
         )
 
 
@@ -858,7 +837,9 @@ async def test_reset_custom_eui64(ezsp_f):
     assert len(ezsp_f.setTokenData.mock_calls) == 0
 
     # With NV3 interface
-    ezsp_f.getTokenData = AsyncMock(return_value=[t.EmberStatus.SUCCESS, b"\xAB" * 8])
+    ezsp_f.getTokenData = AsyncMock(
+        return_value=GetTokenDataRsp(status=t.EmberStatus.SUCCESS, value=b"\xAB" * 8)
+    )
     await ezsp_f.reset_custom_eui64()
     assert ezsp_f.setTokenData.mock_calls == [
         call(t.NV3KeyId.CREATOR_STACK_RESTORED_EUI64, 0, t.LVBytes32(b"\xFF" * 8))
@@ -872,3 +853,13 @@ def test_empty_frame_received(ezsp_f):
     ezsp_f.frame_received(b"")
 
     assert ezsp_f._protocol.__call__.mock_calls == []
+
+
+def test_frame_parsing_error_doesnt_disconnect(ezsp_f, caplog):
+    """Test that frame parsing error doesn't trigger a disconnect."""
+    ezsp_f._protocol = MagicMock(spec_set=ezsp_f._protocol, side_effect=RuntimeError())
+
+    with caplog.at_level(logging.WARNING):
+        ezsp_f.frame_received(b"test")
+
+    assert "Failed to parse frame" in caplog.text
