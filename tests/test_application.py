@@ -45,7 +45,7 @@ def ieee(init=0):
 @pytest.fixture
 def make_app(monkeypatch, ieee):
     def inner(config, **kwargs):
-        app_cfg = ControllerApplication.SCHEMA({**APP_CONFIG, **config})
+        app_cfg = {**APP_CONFIG, **config}
         app = ControllerApplication(app_cfg)
 
         app._ezsp = _create_app_for_startup(
@@ -1210,10 +1210,10 @@ async def test_ezsp_value_counter(app, monkeypatch):
             if nop_success % 2:
                 raise EzspError
             else:
-                return ([0, 1, 2, 3],)
+                return {t.EmberCounterType(i): v for i, v in enumerate([0, 1, 2, 3])}
         raise asyncio.TimeoutError
 
-    app._ezsp.readCounters = AsyncMock(side_effect=counters_mock)
+    app._ezsp.read_counters = AsyncMock(side_effect=counters_mock)
     app._ezsp.nop = AsyncMock(side_effect=EzspError)
     app._ezsp.getValue = AsyncMock(
         return_value=(t.EzspStatus.ERROR_OUT_OF_MEMORY, b"\x20")
@@ -1222,7 +1222,7 @@ async def test_ezsp_value_counter(app, monkeypatch):
     app._ctrl_event.set()
 
     await app._watchdog_feed()
-    assert app._ezsp.readCounters.await_count != 0
+    assert app._ezsp.read_counters.await_count != 0
     assert app._ezsp.nop.await_count == 0
 
     cnt = t.EmberCounterType
