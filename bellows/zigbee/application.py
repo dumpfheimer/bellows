@@ -786,8 +786,10 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                             ):
                                 aps_frame.options |= t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
                                 aps_frame.options |= t.EmberApsOption.APS_OPTION_RETRY
-                                await self._ezsp.setExtendedTimeout(
-                                    remoteEui64=device.ieee, extendedTimeout=True
+                                await self._ezsp.set_extended_timeout(
+                                    nwk=device.nwk,
+                                    ieee=device.ieee,
+                                    extended_timeout=True,
                                 )
 
                             if packet.source_route is not None:
