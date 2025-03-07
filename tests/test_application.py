@@ -17,6 +17,7 @@ import bellows.config as config
 from bellows.exception import ControllerError, EzspError
 import bellows.ezsp as ezsp
 from bellows.ezsp.v9.commands import GetTokenDataRsp
+from bellows.ezsp.xncp import FirmwareFeatures, FlowControlType
 import bellows.types
 import bellows.types as t
 import bellows.types.struct
@@ -24,6 +25,7 @@ import bellows.uart as uart
 import bellows.zigbee.application
 from bellows.zigbee.application import ControllerApplication
 import bellows.zigbee.device
+from bellows.zigbee.device import EZSPEndpoint, EZSPGroupEndpoint
 from bellows.zigbee.util import map_rssi_to_energy
 
 from tests.common import mock_ezsp_commands
@@ -122,6 +124,13 @@ def _create_app_for_startup(
     ezsp_mock.wait_for_stack_status.return_value.__enter__ = AsyncMock(
         return_value=t.EmberStatus.NETWORK_UP
     )
+    ezsp_mock.customFrame = AsyncMock(
+        return_value=[t.EmberStatus.LIBRARY_NOT_PRESENT, b""]
+    )
+    ezsp_mock.xncp_get_supported_firmware_features = AsyncMock(
+        return_value=FirmwareFeatures.NONE
+    )
+    ezsp_mock._xncp_features = FirmwareFeatures.NONE
 
     if board_info:
         ezsp_mock.get_board_info = AsyncMock(
@@ -844,6 +853,36 @@ async def test_send_packet_unicast_source_route(make_app, packet):
     )
 
 
+async def test_send_packet_unicast_manual_source_route(make_app, packet):
+    app = make_app(
+        {
+            zigpy.config.CONF_SOURCE_ROUTING: True,
+            config.CONF_BELLOWS_CONFIG: {config.CONF_MANUAL_SOURCE_ROUTING: True},
+        }
+    )
+
+    app._ezsp._xncp_features |= FirmwareFeatures.MANUAL_SOURCE_ROUTE
+
+    app._ezsp.xncp_set_manual_source_route = AsyncMock(
+        return_value=None, spec=app._ezsp._protocol.set_source_route
+    )
+
+    packet.source_route = [0x0001, 0x0002]
+    await _test_send_packet_unicast(
+        app,
+        packet,
+        options=(
+            t.EmberApsOption.APS_OPTION_RETRY
+            | t.EmberApsOption.APS_OPTION_ENABLE_ADDRESS_DISCOVERY
+        ),
+    )
+
+    app._ezsp.xncp_set_manual_source_route.assert_called_once_with(
+        nwk=packet.dst.address,
+        relays=[0x0001, 0x0002],
+    )
+
+
 async def test_send_packet_unicast_extended_timeout(app, ieee, packet):
     app.add_device(nwk=packet.dst.address, ieee=ieee)
 
@@ -1290,7 +1329,9 @@ async def test_shutdown(app):
 @pytest.fixture
 def coordinator(app, ieee):
     dev = zigpy.device.Device(app, ieee, 0x0000)
-    dev.endpoints[1] = bellows.zigbee.device.EZSPEndpoint(dev, 1, MagicMock())
+    dev.endpoints[1] = bellows.zigbee.device.EZSPGroupEndpoint.from_descriptor(
+        dev, 1, MagicMock()
+    )
     dev.model = dev.endpoints[1].model
     dev.manufacturer = dev.endpoints[1].manufacturer
 
@@ -1623,8 +1664,8 @@ async def test_startup_coordinator_existing_groups_joined(app, ieee):
         db_device = app.add_device(ieee, 0x0000)
         db_ep = db_device.add_endpoint(1)
 
-        app.groups.add_group(0x1234, "Group Name", suppress_event=True)
-        app.groups[0x1234].add_member(db_ep, suppress_event=True)
+        group = app.groups.add_group(0x1234, "Group Name", suppress_event=True)
+        group.add_member(db_ep, suppress_event=True)
 
         await app.start_network()
 
@@ -1634,6 +1675,19 @@ async def test_startup_coordinator_existing_groups_joined(app, ieee):
             t.EmberMulticastTableEntry(multicastId=0x1234, endpoint=1, networkIndex=0),
         )
     ]
+
+
+async def test_startup_coordinator_xncp_wildcard_groups(app, ieee):
+    """Coordinator ignores multicast workarounds with XNCP firmware."""
+    with mock_for_startup(app, ieee) as ezsp:
+        ezsp._xncp_features |= FirmwareFeatures.MEMBER_OF_ALL_GROUPS
+
+        await app.connect()
+        await app.start_network()
+
+    # No multicast workarounds are present
+    assert app._multicast is None
+    assert not isinstance(app._device.endpoints[1], EZSPGroupEndpoint)
 
 
 async def test_startup_new_coordinator_no_groups_joined(app, ieee):
@@ -1820,6 +1874,7 @@ def zigpy_backup() -> zigpy.backups.NetworkBackup:
             metadata={
                 "ezsp": {
                     "stack_version": 8,
+                    "flow_control": "hardware",
                     "can_burn_userdata_custom_eui64": True,
                     "can_rewrite_custom_eui64": True,
                 }
@@ -1833,6 +1888,24 @@ async def test_load_network_info(
     ieee: zigpy_t.EUI64,
     zigpy_backup: zigpy.backups.NetworkBackup,
 ) -> None:
+    await app.load_network_info(load_devices=True)
+
+    zigpy_backup.network_info.metadata["ezsp"]["flow_control"] = None
+
+    assert app.state.node_info == zigpy_backup.node_info
+    assert app.state.network_info == zigpy_backup.network_info
+
+
+async def test_load_network_info_xncp_flow_control(
+    app: ControllerApplication,
+    ieee: zigpy_t.EUI64,
+    zigpy_backup: zigpy.backups.NetworkBackup,
+) -> None:
+    app._ezsp._xncp_features |= FirmwareFeatures.FLOW_CONTROL_TYPE
+    app._ezsp.xncp_get_flow_control_type = AsyncMock(
+        return_value=FlowControlType.HARDWARE
+    )
+
     await app.load_network_info(load_devices=True)
 
     assert app.state.node_info == zigpy_backup.node_info
@@ -1870,3 +1943,176 @@ async def test_write_network_info(
             )
         )
     ]
+
+
+async def test_network_scan(app: ControllerApplication) -> None:
+    app._ezsp._protocol.startScan.return_value = [t.sl_Status.OK]
+
+    def run_scan() -> None:
+        app._ezsp._protocol._handle_callback(
+            "networkFoundHandler",
+            list(
+                {
+                    "networkFound": t.EmberZigbeeNetwork(
+                        channel=11,
+                        panId=zigpy_t.PanId(0x1D13),
+                        extendedPanId=t.EUI64.convert("00:07:81:00:00:9a:8f:3b"),
+                        allowingJoin=False,
+                        stackProfile=2,
+                        nwkUpdateId=0,
+                    ),
+                    "lastHopLqi": 152,
+                    "lastHopRssi": -62,
+                }.values()
+            ),
+        )
+        app._ezsp._protocol._handle_callback(
+            "networkFoundHandler",
+            list(
+                {
+                    "networkFound": t.EmberZigbeeNetwork(
+                        channel=11,
+                        panId=zigpy_t.PanId(0x2857),
+                        extendedPanId=t.EUI64.convert("00:07:81:00:00:9a:34:1b"),
+                        allowingJoin=False,
+                        stackProfile=2,
+                        nwkUpdateId=0,
+                    ),
+                    "lastHopLqi": 136,
+                    "lastHopRssi": -66,
+                }.values()
+            ),
+        )
+        app._ezsp._protocol._handle_callback(
+            "scanCompleteHandler",
+            list(
+                {
+                    "channel": 26,
+                    "status": t.sl_Status.OK,
+                }.values()
+            ),
+        )
+
+    asyncio.get_running_loop().call_soon(run_scan)
+
+    results = [
+        beacon
+        async for beacon in app.network_scan(
+            channels=t.Channels.from_channel_list([11, 15, 26]), duration_exp=4
+        )
+    ]
+
+    assert results == [
+        zigpy_t.NetworkBeacon(
+            pan_id=0x1D13,
+            extended_pan_id=t.EUI64.convert("00:07:81:00:00:9a:8f:3b"),
+            channel=11,
+            permit_joining=False,
+            stack_profile=2,
+            nwk_update_id=0,
+            lqi=152,
+            src=None,
+            rssi=-62,
+            depth=None,
+            router_capacity=None,
+            device_capacity=None,
+            protocol_version=None,
+        ),
+        zigpy_t.NetworkBeacon(
+            pan_id=0x2857,
+            extended_pan_id=t.EUI64.convert("00:07:81:00:00:9a:34:1b"),
+            channel=11,
+            permit_joining=False,
+            stack_profile=2,
+            nwk_update_id=0,
+            lqi=136,
+            src=None,
+            rssi=-66,
+            depth=None,
+            router_capacity=None,
+            device_capacity=None,
+            protocol_version=None,
+        ),
+    ]
+
+
+async def test_network_scan_failure(app: ControllerApplication) -> None:
+    app._ezsp._protocol.startScan.return_value = [t.sl_Status.FAIL]
+
+    with pytest.raises(zigpy.exceptions.ControllerException):
+        async for beacon in app.network_scan(
+            channels=t.Channels.from_channel_list([11, 15, 26]), duration_exp=4
+        ):
+            pass
+
+
+async def test_packet_capture(app: ControllerApplication) -> None:
+    app._ezsp._protocol.mfglibStart.return_value = [t.sl_Status.OK]
+    app._ezsp._protocol.mfglibSetChannel.return_value = [t.sl_Status.OK]
+    app._ezsp._protocol.mfglibEnd.return_value = [t.sl_Status.OK]
+
+    async def receive_packets() -> None:
+        app._ezsp._protocol._handle_callback(
+            "mfglibRxHandler",
+            list(
+                {
+                    "linkQuality": 150,
+                    "rssi": -70,
+                    "packetContents": b"packet 1\xAB\xCD",
+                }.values()
+            ),
+        )
+
+        await asyncio.sleep(0.5)
+
+        app._ezsp._protocol._handle_callback(
+            "mfglibRxHandler",
+            list(
+                {
+                    "linkQuality": 200,
+                    "rssi": -50,
+                    "packetContents": b"packet 2\xAB\xCD",
+                }.values()
+            ),
+        )
+
+    task = asyncio.create_task(receive_packets())
+    packets = []
+
+    async for packet in app.packet_capture(channel=15):
+        packets.append(packet)
+
+        if len(packets) == 1:
+            await app.packet_capture_change_channel(channel=20)
+        elif len(packets) == 2:
+            break
+
+    assert packets == [
+        zigpy_t.CapturedPacket(
+            timestamp=packets[0].timestamp,
+            rssi=-70,
+            lqi=150,
+            channel=15,
+            data=b"packet 1",
+        ),
+        zigpy_t.CapturedPacket(
+            timestamp=packets[1].timestamp,
+            rssi=-50,
+            lqi=200,
+            channel=20,  # The second packet's channel was changed
+            data=b"packet 2",
+        ),
+    ]
+
+    await task
+    await asyncio.sleep(0.1)
+
+    assert app._ezsp._protocol.mfglibEnd.mock_calls == [call()]
+
+
+async def test_packet_capture_failure(app: ControllerApplication) -> None:
+    app._ezsp._protocol.mfglibStart.return_value = [t.sl_Status.FAIL]
+
+    with pytest.raises(zigpy.exceptions.ControllerException):
+        async for packet in app.packet_capture(channel=15):
+            pass

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import logging
 import os
 import statistics
 import sys
+from typing import AsyncGenerator
 
 if sys.version_info[:2] < (3, 11):
     from async_timeout import timeout as asyncio_timeout  # pragma: no cover
@@ -25,17 +27,20 @@ import zigpy.zdo.types as zdo_t
 
 import bellows
 from bellows.config import (
+    CONF_BELLOWS_CONFIG,
     CONF_EZSP_CONFIG,
     CONF_EZSP_POLICIES,
+    CONF_MANUAL_SOURCE_ROUTING,
     CONF_USE_THREAD,
     CONFIG_SCHEMA,
 )
 from bellows.exception import ControllerError, EzspError, StackAlreadyRunning
 import bellows.ezsp
+from bellows.ezsp.xncp import FirmwareFeatures
 import bellows.multicast
 import bellows.types as t
 from bellows.zigbee import repairs
-from bellows.zigbee.device import EZSPEndpoint
+from bellows.zigbee.device import EZSPEndpoint, EZSPGroupEndpoint
 import bellows.zigbee.util as util
 
 APS_ACK_TIMEOUT = 500
@@ -90,6 +95,7 @@ class ControllerApplication(zigpy.application.ControllerApplication):
         self._watchdog_feed_counter = 0
 
         self._req_lock = asyncio.Lock()
+        self._packet_capture_channel: int | None = None
 
     @property
     def controller_event(self):
@@ -203,13 +209,19 @@ class ControllerApplication(zigpy.application.ControllerApplication):
 
         group_membership = {}
 
-        try:
-            db_device = self.get_device(ieee=self.state.node_info.ieee)
-        except KeyError:
-            pass
+        if FirmwareFeatures.MEMBER_OF_ALL_GROUPS in self._ezsp._xncp_features:
+            # If the firmware passes through all incoming group messages, do nothing
+            endpoint_cls = EZSPEndpoint
         else:
-            if 1 in db_device.endpoints:
-                group_membership = db_device.endpoints[1].member_of
+            endpoint_cls = EZSPGroupEndpoint
+
+            try:
+                db_device = self.get_device(ieee=self.state.node_info.ieee)
+            except KeyError:
+                pass
+            else:
+                if 1 in db_device.endpoints:
+                    group_membership = db_device.endpoints[1].member_of
 
         ezsp_device = zigpy.device.Device(
             application=self,
@@ -221,18 +233,17 @@ class ControllerApplication(zigpy.application.ControllerApplication):
         # The coordinator device does not respond to attribute reads so we have to
         # divine the internal NCP state.
         for zdo_desc in self._created_device_endpoints:
-            ep = EZSPEndpoint(ezsp_device, zdo_desc.endpoint, zdo_desc)
+            ep = endpoint_cls.from_descriptor(ezsp_device, zdo_desc.endpoint, zdo_desc)
             ezsp_device.endpoints[zdo_desc.endpoint] = ep
             ezsp_device.model = ep.model
             ezsp_device.manufacturer = ep.manufacturer
 
         await ezsp_device.schedule_initialize()
 
-        # Group membership is stored in the database for EZSP coordinators
-        ezsp_device.endpoints[1].member_of.update(group_membership)
-
-        self._multicast = bellows.multicast.Multicast(ezsp)
-        await self._multicast.startup(ezsp_device)
+        if FirmwareFeatures.MEMBER_OF_ALL_GROUPS not in self._ezsp._xncp_features:
+            ezsp_device.endpoints[1].member_of.update(group_membership)
+            self._multicast = bellows.multicast.Multicast(ezsp)
+            await self._multicast.startup(ezsp_device)
 
     async def load_network_info(self, *, load_devices=False) -> None:
         ezsp = self._ezsp
@@ -287,6 +298,11 @@ class ControllerApplication(zigpy.application.ControllerApplication):
         can_burn_userdata_custom_eui64 = await ezsp.can_burn_userdata_custom_eui64()
         can_rewrite_custom_eui64 = await ezsp.can_rewrite_custom_eui64()
 
+        if FirmwareFeatures.FLOW_CONTROL_TYPE in ezsp._xncp_features:
+            flow_control = await ezsp.xncp_get_flow_control_type()
+        else:
+            flow_control = None
+
         self.state.network_info = zigpy.state.NetworkInfo(
             source=f"bellows@{LIB_VERSION}",
             extended_pan_id=zigpy.types.ExtendedPanId(nwk_params.extendedPanId),
@@ -307,6 +323,9 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                     "stack_version": ezsp.ezsp_version,
                     "can_burn_userdata_custom_eui64": can_burn_userdata_custom_eui64,
                     "can_rewrite_custom_eui64": can_rewrite_custom_eui64,
+                    "flow_control": (
+                        flow_control.name.lower() if flow_control is not None else None
+                    ),
                 }
             },
         )
@@ -703,6 +722,88 @@ class ControllerApplication(zigpy.application.ControllerApplication):
             for channel in list(channels)
         }
 
+    async def _network_scan(
+        self, channels: t.Channels, duration_exp: int
+    ) -> AsyncGenerator[zigpy.types.NetworkBeacon]:
+        """Scans for networks and yields network beacons."""
+        queue = asyncio.Queue()
+
+        with self._ezsp.callback_for_commands(
+            {"networkFoundHandler", "scanCompleteHandler"},
+            callback=lambda command, response: queue.put_nowait((command, response)),
+        ):
+            # XXX: replace with normal command invocation once overload is removed
+            (status,) = await self._ezsp._command(
+                "startScan",
+                scanType=t.EzspNetworkScanType.ACTIVE_SCAN,
+                channelMask=channels,
+                duration=duration_exp,
+            )
+
+            if t.sl_Status.from_ember_status(status) != t.sl_Status.OK:
+                raise ControllerError(f"Failed to start scan: {status!r}")
+
+            while True:
+                command, response = await queue.get()
+
+                if command == "scanCompleteHandler":
+                    break
+
+                (networkFound, lastHopLqi, lastHopRssi) = response
+
+                yield zigpy.types.NetworkBeacon(
+                    pan_id=networkFound.panId,
+                    extended_pan_id=networkFound.extendedPanId,
+                    channel=networkFound.channel,
+                    nwk_update_id=networkFound.nwkUpdateId,
+                    permit_joining=bool(networkFound.allowingJoin),
+                    stack_profile=networkFound.stackProfile,
+                    lqi=lastHopLqi,
+                    rssi=lastHopRssi,
+                )
+
+    def _check_status(self, status: t.sl_Status | t.EmberStatus) -> None:
+        if t.sl_Status.from_ember_status(status) != t.sl_Status.OK:
+            raise ControllerError(f"Command failed: {status!r}")
+
+    async def _packet_capture(self, channel: int):
+        (status,) = await self._ezsp.mfglibStart(rxCallback=True)
+        self._check_status(status)
+
+        try:
+            await self._packet_capture_change_channel(channel=channel)
+            assert self._packet_capture_channel is not None
+
+            queue = asyncio.Queue()
+
+            with self._ezsp.callback_for_commands(
+                {"mfglibRxHandler"},
+                callback=lambda _, response: queue.put_nowait(
+                    (datetime.now(timezone.utc), response)
+                ),
+            ):
+                while True:
+                    timestamp, (linkQuality, rssi, packetContents) = await queue.get()
+
+                    # The last two bytes are not a FCS
+                    packetContents = packetContents[:-2]
+
+                    yield zigpy.types.CapturedPacket(
+                        timestamp=timestamp,
+                        rssi=rssi,
+                        lqi=linkQuality,
+                        channel=self._packet_capture_channel,
+                        data=packetContents,
+                    )
+        finally:
+            (status,) = await self._ezsp.mfglibEnd()
+            self._check_status(status)
+
+    async def _packet_capture_change_channel(self, channel: int):
+        (status,) = await self._ezsp.mfglibSetChannel(channel=channel)
+        self._check_status(status)
+        self._packet_capture_channel = channel
+
     async def send_packet(self, packet: zigpy.types.ZigbeePacket) -> None:
         if not self.is_controller_running:
             raise ControllerError("ApplicationController is not running")
@@ -790,10 +891,22 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                                 )
 
                             if packet.source_route is not None:
-                                await self._ezsp.set_source_route(
-                                    nwk=packet.dst.address,
-                                    relays=packet.source_route,
-                                )
+                                if (
+                                    FirmwareFeatures.MANUAL_SOURCE_ROUTE
+                                    in self._ezsp._xncp_features
+                                    and self.config[CONF_BELLOWS_CONFIG][
+                                        CONF_MANUAL_SOURCE_ROUTING
+                                    ]
+                                ):
+                                    await self._ezsp.xncp_set_manual_source_route(
+                                        nwk=packet.dst.address,
+                                        relays=packet.source_route,
+                                    )
+                                else:
+                                    await self._ezsp.set_source_route(
+                                        nwk=packet.dst.address,
+                                        relays=packet.source_route,
+                                    )
 
                             status, _ = await self._ezsp.send_unicast(
                                 nwk=packet.dst.address,

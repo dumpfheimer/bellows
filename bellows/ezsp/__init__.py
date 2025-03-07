@@ -23,7 +23,9 @@ import zigpy.config
 
 import bellows.config as conf
 from bellows.exception import EzspError, InvalidCommandError
+from bellows.ezsp import xncp
 from bellows.ezsp.config import DEFAULT_CONFIG, RuntimeConfig, ValueConfig
+from bellows.ezsp.xncp import FirmwareFeatures, FlowControlType
 import bellows.types as t
 import bellows.uart
 
@@ -62,6 +64,7 @@ class EZSP:
         self._callbacks = {}
         self._ezsp_event = asyncio.Event()
         self._ezsp_version = v4.EZSPv4.VERSION
+        self._xncp_features = FirmwareFeatures.NONE
         self._gw = None
         self._protocol = None
         self._application = application
@@ -124,6 +127,7 @@ class EZSP:
             await self.reset()
 
         await self.version()
+        await self.get_xncp_features()
 
     async def connect(self, *, use_thread: bool = True) -> None:
         assert self._gw is None
@@ -167,12 +171,33 @@ class EZSP:
         if ver != self.ezsp_version:
             self._switch_protocol_version(ver)
             await self._command("version", desiredProtocolVersion=ver)
+
         LOGGER.debug(
-            "EZSP Stack Type: %s, Stack Version: %04x, Protocol version: %s",
+            ("EZSP Stack Type: %s" ", Stack Version: %04x" ", Protocol version: %s"),
             stack_type,
             stack_version,
             ver,
         )
+
+    async def get_xncp_features(self) -> xncp.FirmwareFeatures:
+        # Some older gateways seem to have their own XNCP protocol. Ignore them.
+        if self._ezsp_version < 13:
+            return FirmwareFeatures.NONE
+
+        try:
+            self._xncp_features = await self.xncp_get_supported_firmware_features()
+        except InvalidCommandError:
+            self._xncp_features = xncp.FirmwareFeatures.NONE
+
+        # Disable the XNCP feature flag, it doesn't seem to work correctly
+        if FirmwareFeatures.MEMBER_OF_ALL_GROUPS in self._xncp_features:
+            _, _, version = await self.get_board_info()
+
+            if version == "7.4.4.0 build 0":
+                self._xncp_features &= ~FirmwareFeatures.MEMBER_OF_ALL_GROUPS
+
+        LOGGER.debug("XNCP features: %s", self._xncp_features)
+        return self._xncp_features
 
     async def disconnect(self):
         self.stop_ezsp()
@@ -198,27 +223,43 @@ class EZSP:
         self, name, item_frames, completion_frame, spos, *args, **kwargs
     ):
         """Run a command, returning result callbacks as a list"""
-        fut = asyncio.Future()
+        queue = asyncio.Queue()
         results = []
 
-        def cb(frame_name, response):
-            if frame_name in item_frames:
-                results.append(response)
-            elif frame_name == completion_frame:
-                fut.set_result(response)
-
-        cbid = self.add_callback(cb)
-        try:
+        with self.callback_for_commands(
+            commands=set(item_frames) | {completion_frame},
+            callback=lambda command, response: queue.put_nowait((command, response)),
+        ):
             v = await self._command(name, *args, **kwargs)
             if t.sl_Status.from_ember_status(v[0]) != t.sl_Status.OK:
                 raise Exception(v)
-            v = await fut
-            if t.sl_Status.from_ember_status(v[spos]) != t.sl_Status.OK:
-                raise Exception(v)
-        finally:
-            self.remove_callback(cbid)
+
+            while True:
+                command, response = await queue.get()
+                if command == completion_frame:
+                    if t.sl_Status.from_ember_status(response[spos]) != t.sl_Status.OK:
+                        raise Exception(response)
+
+                    break
+
+                results.append(response)
 
         return results
+
+    @contextlib.contextmanager
+    def callback_for_commands(
+        self, commands: set[str], callback: Callable
+    ) -> Generator[None]:
+        def cb(frame_name, response):
+            if frame_name in commands:
+                callback(frame_name, response)
+
+        cbid = self.add_callback(cb)
+
+        try:
+            yield
+        finally:
+            self.remove_callback(cbid)
 
     startScan = functools.partialmethod(
         _list_command,
@@ -228,7 +269,11 @@ class EZSP:
         1,
     )
     pollForData = functools.partialmethod(
-        _list_command, "pollForData", ["pollHandler"], "pollCompleteHandler", 0
+        _list_command,
+        "pollForData",
+        ["pollHandler"],
+        "pollCompleteHandler",
+        0,
     )
     zllStartScan = functools.partialmethod(
         _list_command,
@@ -308,11 +353,10 @@ class EZSP:
     ) -> tuple[str, str, str | None] | tuple[None, None, str | None]:
         """Return board info."""
 
-        tokens = {}
+        tokens: dict[t.EzspMfgTokenId, str | None] = {}
 
-        for token in (t.EzspMfgTokenId.MFG_STRING, t.EzspMfgTokenId.MFG_BOARD_NAME):
-            (value,) = await self.getMfgToken(tokenId=token)
-            LOGGER.debug("Read %s token: %s", token.name, value)
+        for token_id in (t.EzspMfgTokenId.MFG_STRING, t.EzspMfgTokenId.MFG_BOARD_NAME):
+            value = await self.get_mfg_token(token_id)
 
             # Tokens are fixed-length and initially filled with \xFF but also can end
             # with \x00
@@ -324,10 +368,7 @@ class EZSP:
             except UnicodeDecodeError:
                 result = "0x" + value.hex().upper()
 
-            if not result:
-                result = None
-
-            tokens[token] = result
+            tokens[token_id] = result or None
 
         (status, ver_info_bytes) = await self.getValue(
             valueId=t.EzspValueId.VALUE_VERSION_INFO
@@ -341,6 +382,14 @@ class EZSP:
             patch, ver_info_bytes = t.uint8_t.deserialize(ver_info_bytes)
             special, ver_info_bytes = t.uint8_t.deserialize(ver_info_bytes)
             version = f"{major}.{minor}.{patch}.{special} build {build}"
+            build_string = None
+
+            if FirmwareFeatures.BUILD_STRING in self._xncp_features:
+                with contextlib.suppress(InvalidCommandError):
+                    build_string = await self.xncp_get_build_string()
+
+            if build_string:
+                version = f"{version} ({build_string})"
 
         return (
             tokens[t.EzspMfgTokenId.MFG_STRING],
@@ -369,9 +418,23 @@ class EZSP:
 
         return None
 
+    async def get_mfg_token(self, token: t.EzspMfgTokenId) -> bytes:
+        (value,) = await self.getMfgToken(tokenId=token)
+        LOGGER.debug("Read manufacturing token %s: %s", token.name, value)
+
+        override_value = None
+
+        if FirmwareFeatures.MFG_TOKEN_OVERRIDES in self._xncp_features:
+            with contextlib.suppress(InvalidCommandError):
+                override_value = await self.xncp_get_mfg_token_override(token)
+
+            LOGGER.debug("XNCP override token %s: %s", token.name, override_value)
+
+        return override_value or value
+
     async def _get_mfg_custom_eui_64(self) -> t.EUI64 | None:
         """Get the custom EUI 64 manufacturing token, if it has a valid value."""
-        (data,) = await self.getMfgToken(tokenId=t.EzspMfgTokenId.MFG_CUSTOM_EUI_64)
+        data = await self.get_mfg_token(t.EzspMfgTokenId.MFG_CUSTOM_EUI_64)
 
         # Manufacturing tokens do not exist in RCP firmware: all reads are empty
         if not data:
@@ -616,3 +679,60 @@ class EZSP:
                     status,
                 )
                 continue
+
+    async def send_xncp_frame(
+        self, payload: xncp.XncpCommandPayload
+    ) -> xncp.XncpCommandPayload:
+        """Send an XNCP frame."""
+        req_frame = xncp.XncpCommand.from_payload(payload)
+        LOGGER.debug("Sending XNCP frame: %s", req_frame)
+        status, data = await self.customFrame(req_frame.serialize())
+
+        if status != t.EmberStatus.SUCCESS:
+            raise InvalidCommandError("XNCP is not supported")
+
+        try:
+            rsp_frame = xncp.XncpCommand.from_bytes(data)
+        except ValueError:
+            raise InvalidCommandError(f"Invalid XNCP response: {data!r}")
+
+        if isinstance(rsp_frame.payload, xncp.Unknown):
+            raise InvalidCommandError(f"XNCP firmware does not support {payload}")
+
+        LOGGER.debug("Received XNCP frame: %s", rsp_frame)
+
+        if rsp_frame.status != t.EmberStatus.SUCCESS:
+            raise InvalidCommandError(f"XNCP response error: {rsp_frame.status}")
+
+        return rsp_frame.payload
+
+    async def xncp_get_supported_firmware_features(self) -> xncp.FirmwareFeatures:
+        """Get supported firmware extensions."""
+        rsp = await self.send_xncp_frame(xncp.GetSupportedFeaturesReq())
+        return rsp.features
+
+    async def xncp_set_manual_source_route(
+        self, destination: t.NWK, route: list[t.NWK]
+    ) -> None:
+        """Set a manual source route."""
+        await self.send_xncp_frame(
+            xncp.SetSourceRouteReq(
+                destination=destination,
+                source_route=route,
+            )
+        )
+
+    async def xncp_get_mfg_token_override(self, token: t.EzspMfgTokenId) -> bytes:
+        """Get manufacturing token override."""
+        rsp = await self.send_xncp_frame(xncp.GetMfgTokenOverrideReq(token=token))
+        return rsp.value
+
+    async def xncp_get_build_string(self) -> str:
+        """Get build string."""
+        rsp = await self.send_xncp_frame(xncp.GetBuildStringReq())
+        return rsp.build_string.decode("utf-8")
+
+    async def xncp_get_flow_control_type(self) -> FlowControlType:
+        """Get flow control type."""
+        rsp = await self.send_xncp_frame(xncp.GetFlowControlTypeReq())
+        return rsp.flow_control_type
