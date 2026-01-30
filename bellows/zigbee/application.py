@@ -83,6 +83,8 @@ TRANSIENT_STATUS_MESSAGES = [
     t.sl_Status.ZIGBEE_SEND_UNICAST_ROUTE_DISCOVERY_UNDERWAY,
     t.sl_Status.ZIGBEE_MAX_MESSAGE_LIMIT_REACHED,
     t.sl_Status.ZIGBEE_SEND_UNICAST_FAILURE,
+    t.sl_Status.ROUTE_ERROR_NON_TREE_LINK_FAILURE,
+    t.sl_Status.ROUTE_ERROR_TREE_LINK_FAILURE,
 ]
 
 DEFAULT_TX_POWER = 8  # dBm
@@ -1086,6 +1088,7 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                             data=packet.data.serialize(),
                         )
 
+                # this happens when the device is completely offline - maybe a deliveryerror is better in this case
                 if t.sl_Status.from_ember_status(status) in TRANSIENT_STATUS_MESSAGES:
                     raise zigpy.exceptions.SendError(
                         f"Failed to deliver message: {status!r}", status
