@@ -1086,7 +1086,11 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                             data=packet.data.serialize(),
                         )
 
-                if status != t.sl_Status.OK:
+                if t.sl_Status.from_ember_status(status) in TRANSIENT_STATUS_MESSAGES:
+                    raise zigpy.exceptions.SendError(
+                        f"Failed to deliver message: {status!r}", status
+                    )
+                elif status != t.sl_Status.OK:
                     raise zigpy.exceptions.DeliveryError(
                         f"Failed to enqueue message: {status!r}", status
                     )
