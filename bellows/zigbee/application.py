@@ -73,6 +73,16 @@ IEEE_PREFIX_MFG_ID = {
     "54:EF:44": 0x115F,  # Lumi
 }
 
+TRANSIENT_STATUS_MESSAGES = [
+    t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE,
+    t.sl_Status.BUSY,
+    t.sl_Status.ZIGBEE_SEND_UNICAST_NO_ROUTE,
+    t.sl_Status.CCA_FAILURE,
+    t.sl_Status.MAC_TRANSMIT_QUEUE_FULL,
+    t.sl_Status.ZIGBEE_MANY_TO_ONE_ROUTE_FAILURE,
+    t.sl_Status.ZIGBEE_SEND_UNICAST_ROUTE_DISCOVERY_UNDERWAY,
+]
+
 DEFAULT_TX_POWER = 8  # dBm
 
 LIB_VERSION = importlib.metadata.version("bellows")
@@ -993,10 +1003,9 @@ class ControllerApplication(zigpy.application.ControllerApplication):
         if self.config[zigpy.config.CONF_SOURCE_ROUTING]:
             # Source routing uses address discovery to discover routes
             aps_frame.options |= t.EmberApsOption.APS_OPTION_ENABLE_ADDRESS_DISCOVERY
-        elif zigpy.types.TransmitOptions.FORCE_ROUTE_DISCOVERY in packet.tx_options:
+        if zigpy.types.TransmitOptions.FORCE_ROUTE_DISCOVERY in packet.tx_options:
             # Forcing route discovery requires retrying
             aps_frame.options |= t.EmberApsOption.APS_OPTION_FORCE_ROUTE_DISCOVERY
-            aps_frame.options |= t.EmberApsOption.APS_OPTION_RETRY
         else:
             aps_frame.options |= t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
 
@@ -1093,6 +1102,14 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                     else MESSAGE_SEND_TIMEOUT_BATTERY
                 ):
                     send_status, _ = await future
+
+                if (
+                    t.sl_Status.from_ember_status(send_status)
+                    in TRANSIENT_STATUS_MESSAGES
+                ):
+                    raise zigpy.exceptions.TransientConnectionError(
+                        f"Failed to deliver message: {send_status!r}", send_status
+                    )
 
                 if t.sl_Status.from_ember_status(send_status) != t.sl_Status.OK:
                     raise zigpy.exceptions.DeliveryError(
@@ -1220,3 +1237,18 @@ class ControllerApplication(zigpy.application.ControllerApplication):
 
     def handle_route_error(self, status: t.sl_Status, nwk: t.EmberNodeId) -> None:
         LOGGER.debug("Processing route error: status=%s, nwk=%s", status, nwk)
+
+        for pending, tag in self._pending_requests:
+            LOGGER.debug(
+                "Processing route error testing: nwk=%s, pending=%s", nwk, pending
+            )
+            if pending == nwk:
+                LOGGER.debug(
+                    "Processing route error have nwk: status=%s, nwk=%s", status, nwk
+                )
+                future = self._pending_requests.get((pending, tag))
+                future.set_result(
+                    (t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE, "message send failed")
+                )
+                LOGGER.debug("Removed pending request for nwk %s", nwk)
+                break
