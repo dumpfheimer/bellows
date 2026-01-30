@@ -89,7 +89,7 @@ TRANSIENT_ERROR_STACK_MESSAGES = [
     t.EmberStackError.ROUTE_ERROR_TREE_LINK_FAILURE,
     t.EmberStackError.ROUTE_ERROR_MANY_TO_ONE_ROUTE_FAILURE,
     t.EmberStackError.ROUTE_ERROR_NO_ROUTING_CAPACITY,
-    t.EmberStackError.ROUTE_ERROR_NO_ROUTE_AVAILABLE,
+    #t.EmberStackError.ROUTE_ERROR_NO_ROUTE_AVAILABLE,
 ]
 
 DEFAULT_TX_POWER = 8  # dBm
@@ -1096,7 +1096,7 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                 # this happens when the device is completely offline - maybe a deliveryerror is better in this case
                 if status in TRANSIENT_ERROR_STACK_MESSAGES:
                     raise zigpy.exceptions.SendError(
-                        f"Failed to deliver message: {status!r}", status
+                        f"Failed to deliver message, failed to enqueue: {status!r}", status
                     )
                 elif status != t.sl_Status.OK:
                     raise zigpy.exceptions.DeliveryError(
