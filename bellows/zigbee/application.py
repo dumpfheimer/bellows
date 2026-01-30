@@ -1094,11 +1094,12 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                         )
 
                 # this happens when the device is completely offline - maybe a deliveryerror is better in this case
-                if status in TRANSIENT_ERROR_STACK_MESSAGES:
-                    raise zigpy.exceptions.SendError(
-                        f"Failed to deliver message, failed to enqueue: {status!r}", status
-                    )
-                elif status != t.sl_Status.OK:
+                # TODO: differentiate between sl_Status and EmberStackError
+                #if status in TRANSIENT_ERROR_STACK_MESSAGES:
+                #    raise zigpy.exceptions.SendError(
+                #        f"Failed to deliver message, failed to enqueue: {status!r}", status
+                #    )
+                if status != t.sl_Status.OK:
                     raise zigpy.exceptions.DeliveryError(
                         f"Failed to enqueue message: {status!r}", status
                     )
