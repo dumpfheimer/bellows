@@ -1268,4 +1268,3 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                     (t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE, "message send failed")
                 )
                 LOGGER.debug("Removed pending request for nwk %s", nwk)
-                break
