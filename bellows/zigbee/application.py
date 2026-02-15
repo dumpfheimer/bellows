@@ -1015,6 +1015,7 @@ class ControllerApplication(zigpy.application.ControllerApplication):
         if zigpy.types.TransmitOptions.FORCE_ROUTE_DISCOVERY in packet.tx_options:
             # Forcing route discovery requires retrying
             aps_frame.options |= t.EmberApsOption.APS_OPTION_FORCE_ROUTE_DISCOVERY
+            aps_frame.options |= t.EmberApsOption.APS_OPTION_RETRY
         else:
             aps_frame.options |= t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
 
