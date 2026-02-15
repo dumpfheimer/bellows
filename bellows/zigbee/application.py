@@ -1128,6 +1128,9 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                         f"Failed to deliver message: {send_status!r}", send_status
                     )
 
+                if send_status == t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE:
+                    device.relays = None
+
                 if t.sl_Status.from_ember_status(send_status) != t.sl_Status.OK:
                     raise zigpy.exceptions.DeliveryError(
                         f"Failed to deliver message: {send_status!r}", send_status
