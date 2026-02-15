@@ -1018,6 +1018,7 @@ class ControllerApplication(zigpy.application.ControllerApplication):
             aps_frame.options |= t.EmberApsOption.APS_OPTION_RETRY
         else:
             aps_frame.options |= t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
+            aps_frame.options |= t.EmberApsOption.APS_OPTION_RETRY
 
         extended_timeout = packet.extended_timeout
 
