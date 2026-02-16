@@ -1070,7 +1070,7 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                                     nwk=packet.dst.address,
                                     relays=packet.source_route,
                                 )
-                                LOGGER.warning("Set source route to %s to %s", packet.dst.address, packet.source_route)
+                                LOGGER.warning("Set source route to %s to %s (%s)", packet.dst.address, packet.source_route, resp)
 
                         status, _ = await self._ezsp.send_unicast(
                             nwk=packet.dst.address,
