@@ -1027,8 +1027,6 @@ class ControllerApplication(zigpy.application.ControllerApplication):
             zigpy.types.TransmitOptions.ACK in packet.tx_options
             and packet.dst.addr_mode == zigpy.types.AddrMode.NWK
         ):
-            aps_frame.options |= t.EmberApsOption.APS_OPTION_RETRY
-
             # We disable extended timeout if we enable ACKs
             extended_timeout = False
 
@@ -1104,7 +1102,7 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                 #        f"Failed to deliver message, failed to enqueue: {status!r}", status
                 #    )
                 if status != t.sl_Status.OK:
-                    raise zigpy.exceptions.DeliveryError(
+                    raise zigpy.exceptions.SendError(
                         f"Failed to enqueue message: {status!r}", status
                     )
 
