@@ -589,7 +589,7 @@ class EZSP:
         """Enable source routing on NCP."""
         res = await self.setConcentrator(
             on=enabled,
-            concentratorType=t.EmberConcentratorType.LOW_RAM_CONCENTRATOR,
+            concentratorType=t.EmberConcentratorType.HIGH_RAM_CONCENTRATOR,
             minTime=MTOR_MIN_INTERVAL,
             maxTime=MTOR_MAX_INTERVAL,
             routeErrorThreshold=MTOR_ROUTE_ERROR_THRESHOLD,

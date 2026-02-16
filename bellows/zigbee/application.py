@@ -1260,11 +1260,6 @@ class ControllerApplication(zigpy.application.ControllerApplication):
     def handle_route_error(self, status: t.sl_Status, nwk: t.EmberNodeId) -> None:
         LOGGER.debug("Processing route error: status=%s, nwk=%s", status, nwk)
 
-        self._ezsp.sendManyToOneRouteRequest(
-            concentratorType=t.EmberConcentratorType.LOW_RAM_CONCENTRATOR,
-            radius=0,
-        )
-
         for pending, tag in self._pending_requests:
             LOGGER.debug(
                 "Processing route error testing: nwk=%s, pending=%s", nwk, pending
