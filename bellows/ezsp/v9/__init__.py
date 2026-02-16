@@ -41,4 +41,5 @@ class EZSPv9(EZSPv8):
 
     async def set_source_route(self, nwk: t.NWK, relays: list[t.NWK]) -> t.sl_Status:
         # While the command may succeed, it does absolutely nothing
-        return t.sl_Status.OK
+        (res,) = await self.setSourceRoute(destination=nwk, relayList=relays)
+        return t.sl_Status.from_ember_status(res)
