@@ -1260,7 +1260,7 @@ class ControllerApplication(zigpy.application.ControllerApplication):
         LOGGER.debug("Processing route error: status=%s, nwk=%s", status, nwk)
 
         self._ezsp.sendManyToOneRouteRequest(
-            concentratorType=t.EmberConcentratorType.HIGH_RAM_CONCENTRATOR,
+            concentratorType=t.EmberConcentratorType.LOW_RAM_CONCENTRATOR,
             radius=0,
         )
 
