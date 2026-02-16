@@ -1054,6 +1054,7 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                             )
 
                         if packet.source_route is not None:
+                            aps_frame.options &= ~EmberApsOption.APS_OPTION_ENABLE_ADDRESS_DISCOVERY
                             if (
                                 FirmwareFeatures.MANUAL_SOURCE_ROUTE
                                 in self._ezsp._xncp_features
