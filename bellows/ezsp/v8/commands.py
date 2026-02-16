@@ -73,6 +73,7 @@ COMMANDS = {
         0x00AE,
         {
             "destination": t.EmberNodeId,
+            "relayCount": t.uint8_t,
             "relayList": t.LVList[t.EmberNodeId],
         },
         {
