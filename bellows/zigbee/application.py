@@ -1138,7 +1138,7 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                     t.sl_Status.from_ember_status(send_status)
                     in ROUTING_STATUS_MESSAGES
                 ):
-                    raise zigpy.exceptions.RoutingError(
+                    raise zigpy.exceptions.RouteError(
                         f"Failed to route message: {send_status!r}", send_status
                     )
 
