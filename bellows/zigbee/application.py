@@ -1101,6 +1101,16 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                 #    raise zigpy.exceptions.SendError(
                 #        f"Failed to deliver message, failed to enqueue: {status!r}", status
                 #    )
+                if status == t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE:
+                    raise zigpy.exceptions.RouteError(
+                            f"Failed to route message: {status!r}", status
+                    )
+
+                if status == t.sl_Status.ZIGBEE_SEND_UNICAST_NO_ROUTE:
+                    raise zigpy.exceptions.RouteError(
+                            f"Failed to route message: {status!r}", status
+                    )
+
                 if status != t.sl_Status.OK:
                     raise zigpy.exceptions.SendError(
                         f"Failed to enqueue message: {status!r}", status
@@ -1128,8 +1138,6 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                         f"Failed to deliver message: {send_status!r}", send_status
                     )
 
-                if send_status == t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE:
-                    device.relays = None
 
                 if t.sl_Status.from_ember_status(send_status) != t.sl_Status.OK:
                     raise zigpy.exceptions.DeliveryError(
