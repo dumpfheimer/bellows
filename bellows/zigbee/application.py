@@ -73,6 +73,10 @@ IEEE_PREFIX_MFG_ID = {
     "54:EF:44": 0x115F,  # Lumi
 }
 
+ROUTING_STATUS_MESSAGES = [
+    t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE,
+    t.sl_Status.ZIGBEE_SEND_UNICAST_NO_ROUTE,
+]
 TRANSIENT_STATUS_MESSAGES = [
     t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE,
     t.sl_Status.BUSY,
@@ -1129,6 +1133,15 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                     else MESSAGE_SEND_TIMEOUT_BATTERY
                 ):
                     send_status, _ = await future
+
+                if (
+                    t.sl_Status.from_ember_status(send_status)
+                    in ROUTING_STATUS_MESSAGES
+                ):
+                    raise zigpy.exceptions.RoutingError(
+                        f"Failed to route message: {send_status!r}", send_status
+                    )
+
 
                 if (
                     t.sl_Status.from_ember_status(send_status)
