@@ -73,11 +73,11 @@ IEEE_PREFIX_MFG_ID = {
     "54:EF:44": 0x115F,  # Lumi
 }
 
-ROUTING_STATUS_MESSAGES = [
+SL_STATUS_ROUTE_ERRORS = [
     t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE,
     t.sl_Status.ZIGBEE_SEND_UNICAST_NO_ROUTE,
 ]
-TRANSIENT_STATUS_MESSAGES = [
+SL_STATUS_SEND_ERRORS = [
     t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE,
     t.sl_Status.BUSY,
     t.sl_Status.ZIGBEE_SEND_UNICAST_NO_ROUTE,
@@ -87,13 +87,6 @@ TRANSIENT_STATUS_MESSAGES = [
     t.sl_Status.ZIGBEE_SEND_UNICAST_ROUTE_DISCOVERY_UNDERWAY,
     t.sl_Status.ZIGBEE_MAX_MESSAGE_LIMIT_REACHED,
     t.sl_Status.ZIGBEE_SEND_UNICAST_FAILURE,
-]
-TRANSIENT_ERROR_STACK_MESSAGES = [
-    t.EmberStackError.ROUTE_ERROR_NON_TREE_LINK_FAILURE,
-    t.EmberStackError.ROUTE_ERROR_TREE_LINK_FAILURE,
-    t.EmberStackError.ROUTE_ERROR_MANY_TO_ONE_ROUTE_FAILURE,
-    t.EmberStackError.ROUTE_ERROR_NO_ROUTING_CAPACITY,
-    # t.EmberStackError.ROUTE_ERROR_NO_ROUTE_AVAILABLE,
 ]
 
 DEFAULT_TX_POWER = 8  # dBm
@@ -1019,7 +1012,7 @@ class ControllerApplication(zigpy.application.ControllerApplication):
         if zigpy.types.TransmitOptions.FORCE_ROUTE_DISCOVERY in packet.tx_options:
             # Forcing route discovery requires retrying
             aps_frame.options |= t.EmberApsOption.APS_OPTION_FORCE_ROUTE_DISCOVERY
-            aps_frame.options |= t.EmberApsOption.APS_OPTION_RETRY
+            # aps_frame.options |= t.EmberApsOption.APS_OPTION_RETRY
         else:
             aps_frame.options |= t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
 
@@ -1055,7 +1048,9 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                             )
 
                         if packet.source_route is not None:
-                            aps_frame.options &= ~t.EmberApsOption.APS_OPTION_ENABLE_ADDRESS_DISCOVERY
+                            aps_frame.options &= (
+                                ~t.EmberApsOption.APS_OPTION_ENABLE_ADDRESS_DISCOVERY
+                            )
                             if (
                                 FirmwareFeatures.MANUAL_SOURCE_ROUTE
                                 in self._ezsp._xncp_features
@@ -1072,7 +1067,12 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                                     nwk=packet.dst.address,
                                     relays=packet.source_route,
                                 )
-                                LOGGER.warning("Set source route to %s to %s (%s)", packet.dst.address, packet.source_route, resp)
+                                LOGGER.warning(
+                                    "Set source route to %s to %s (%s)",
+                                    packet.dst.address,
+                                    packet.source_route,
+                                    resp,
+                                )
 
                         status, _ = await self._ezsp.send_unicast(
                             nwk=packet.dst.address,
@@ -1098,20 +1098,14 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                             data=packet.data.serialize(),
                         )
 
-                # this happens when the device is completely offline - maybe a deliveryerror is better in this case
-                # TODO: differentiate between sl_Status and EmberStackError
-                # if status in TRANSIENT_ERROR_STACK_MESSAGES:
-                #    raise zigpy.exceptions.SendError(
-                #        f"Failed to deliver message, failed to enqueue: {status!r}", status
-                #    )
                 if status == t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE:
                     raise zigpy.exceptions.RouteError(
-                            f"Failed to route message: {status!r}", status
+                        f"Failed to route message: {status!r}", status
                     )
 
                 if status == t.sl_Status.ZIGBEE_SEND_UNICAST_NO_ROUTE:
                     raise zigpy.exceptions.RouteError(
-                            f"Failed to route message: {status!r}", status
+                        f"Failed to route message: {status!r}", status
                     )
 
                 if status != t.sl_Status.OK:
@@ -1133,23 +1127,15 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                 ):
                     send_status, _ = await future
 
-                if (
-                    t.sl_Status.from_ember_status(send_status)
-                    in ROUTING_STATUS_MESSAGES
-                ):
+                if t.sl_Status.from_ember_status(send_status) in SL_STATUS_ROUTE_ERRORS:
                     raise zigpy.exceptions.RouteError(
                         f"Failed to route message: {send_status!r}", send_status
                     )
 
-
-                if (
-                    t.sl_Status.from_ember_status(send_status)
-                    in TRANSIENT_STATUS_MESSAGES
-                ):
+                if t.sl_Status.from_ember_status(send_status) in SL_STATUS_SEND_ERRORS:
                     raise zigpy.exceptions.SendError(
                         f"Failed to deliver message: {send_status!r}", send_status
                     )
-
 
                 if t.sl_Status.from_ember_status(send_status) != t.sl_Status.OK:
                     raise zigpy.exceptions.DeliveryError(

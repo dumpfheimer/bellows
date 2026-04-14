@@ -35,10 +35,10 @@ RESET_ATTEMPTS = 3
 
 EZSP_LATEST = v18.EZSPv18.VERSION
 LOGGER = logging.getLogger(__name__)
-MTOR_MIN_INTERVAL = 60
-MTOR_MAX_INTERVAL = 3600
-MTOR_ROUTE_ERROR_THRESHOLD = 8
-MTOR_DELIVERY_FAIL_THRESHOLD = 8
+MTOR_MIN_INTERVAL = 10
+MTOR_MAX_INTERVAL = 120
+MTOR_ROUTE_ERROR_THRESHOLD = 3
+MTOR_DELIVERY_FAIL_THRESHOLD = 1
 
 UART_PROBE_TIMEOUT = 3
 NETWORK_PROBE_TIMEOUT = 7
@@ -588,7 +588,7 @@ class EZSP:
     async def set_source_routing(self, enabled: bool) -> None:
         """Enable source routing on NCP."""
         res = await self.setConcentrator(
-            on=enabled,
+            on=True,
             concentratorType=t.EmberConcentratorType.HIGH_RAM_CONCENTRATOR,
             minTime=MTOR_MIN_INTERVAL,
             maxTime=MTOR_MAX_INTERVAL,
