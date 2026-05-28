@@ -37,7 +37,7 @@ CONFIG_SCHEMA = CONFIG_SCHEMA.extend(
         # The above config really should belong in here
         vol.Optional(CONF_BELLOWS_CONFIG, default={}): vol.Schema(
             {
-                vol.Optional(CONF_MANUAL_SOURCE_ROUTING, default=False): bool,
+                vol.Optional(CONF_MANUAL_SOURCE_ROUTING, default=True): bool,
             }
         ),
     }
