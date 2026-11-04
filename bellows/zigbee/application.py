@@ -92,6 +92,19 @@ SL_STATUS_SEND_ERRORS = [
     t.sl_Status.ZIGBEE_SEND_UNICAST_FAILURE,
 ]
 
+# Network statuses reporting that the path to the target failed
+NETWORK_STATUS_PATH_FAILURES = {
+    t.EmberStackError.ROUTE_ERROR_NO_ROUTE_AVAILABLE,
+    t.EmberStackError.ROUTE_ERROR_TREE_LINK_FAILURE,
+    t.EmberStackError.ROUTE_ERROR_NON_TREE_LINK_FAILURE,
+}
+# Network statuses reporting that the target itself could not be reached
+NETWORK_STATUS_DESTINATION_FAILURES = {
+    t.EmberStackError.ROUTE_ERROR_INDIRECT_TRANSACTION_EXPIRY,
+    t.EmberStackError.ROUTE_ERROR_TARGET_DEVICE_UNAVAILABLE,
+    t.EmberStackError.ROUTE_ERROR_TARGET_ADDRESS_UNALLOCATED,
+}
+
 DEFAULT_TX_POWER = 8  # dBm
 
 LIB_VERSION = importlib.metadata.version("bellows")
@@ -782,6 +795,9 @@ class ControllerApplication(zigpy.application.ControllerApplication):
             status, nwk = args
             status = t.sl_Status.from_ember_status(status)
             self.handle_route_error(status, nwk)
+        elif frame_name == "incomingNetworkStatusHandler":
+            error_code, target = args
+            self.handle_network_status(error_code, target)
         elif frame_name == "idConflictHandler":
             self._handle_id_conflict(*args)
 
@@ -1526,3 +1542,30 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                 "Failing pending request to %s due to route error %s", nwk, status
             )
             future.set_result((status, "route error"))
+
+        # Requests already sent are awaiting a reply in zigpy, let it handle them
+        handle_source_route_failure = getattr(self, "handle_source_route_failure", None)
+        if handle_source_route_failure is not None:
+            handle_source_route_failure(nwk, status)
+
+    def handle_network_status(
+        self, error_code: t.EmberStackError, target: t.EmberNodeId
+    ) -> None:
+        """Handle a network status (NWK route error) reported for `target`.
+
+        Source route and many-to-one route failures are also reported via
+        `incomingRouteErrorHandler` and are handled there.
+        """
+        LOGGER.debug(
+            "Processing network status: error_code=%s, target=%s", error_code, target
+        )
+
+        if error_code in NETWORK_STATUS_PATH_FAILURES:
+            handler = getattr(self, "handle_source_route_failure", None)
+        elif error_code in NETWORK_STATUS_DESTINATION_FAILURES:
+            handler = getattr(self, "handle_destination_unreachable", None)
+        else:
+            return
+
+        if handler is not None:
+            handler(target, error_code)

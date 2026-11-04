@@ -1931,6 +1931,118 @@ async def test_handle_route_error_already_resolved(app):
     assert future.result()[0] == t.sl_Status.OK
 
 
+def test_handle_route_error_notifies_zigpy(app):
+    """Test source route failures are passed on to zigpy."""
+    app.handle_source_route_failure = MagicMock()
+
+    app.ezsp_callback_handler(
+        "incomingRouteErrorHandler",
+        [t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE, t.EmberNodeId(0x1234)],
+    )
+    app.ezsp_callback_handler(
+        "incomingRouteErrorHandler",
+        [t.sl_Status.ZIGBEE_MANY_TO_ONE_ROUTE_FAILURE, t.EmberNodeId(0x1234)],
+    )
+
+    assert app.handle_source_route_failure.mock_calls == [
+        call(0x1234, t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("error_code", "handler"),
+    [
+        (t.EmberStackError.ROUTE_ERROR_NO_ROUTE_AVAILABLE, "source_route"),
+        (t.EmberStackError.ROUTE_ERROR_TREE_LINK_FAILURE, "source_route"),
+        (t.EmberStackError.ROUTE_ERROR_NON_TREE_LINK_FAILURE, "source_route"),
+        (t.EmberStackError.ROUTE_ERROR_INDIRECT_TRANSACTION_EXPIRY, "unreachable"),
+        (t.EmberStackError.ROUTE_ERROR_TARGET_DEVICE_UNAVAILABLE, "unreachable"),
+        (t.EmberStackError.ROUTE_ERROR_TARGET_ADDRESS_UNALLOCATED, "unreachable"),
+        # Handled via `incomingRouteErrorHandler`
+        (t.EmberStackError.ROUTE_ERROR_SOURCE_ROUTE_FAILURE, None),
+        (t.EmberStackError.ROUTE_ERROR_MANY_TO_ONE_ROUTE_FAILURE, None),
+        (t.EmberStackError.ROUTE_ERROR_ADDRESS_CONFLICT, None),
+    ],
+)
+def test_handle_network_status(app, error_code, handler):
+    """Test network statuses are passed on to the matching zigpy handler."""
+    app.handle_source_route_failure = MagicMock()
+    app.handle_destination_unreachable = MagicMock()
+
+    app.ezsp_callback_handler(
+        "incomingNetworkStatusHandler", [error_code, t.EmberNodeId(0x1234)]
+    )
+
+    expected = [call(0x1234, error_code)]
+    assert app.handle_source_route_failure.mock_calls == (
+        expected if handler == "source_route" else []
+    )
+    assert app.handle_destination_unreachable.mock_calls == (
+        expected if handler == "unreachable" else []
+    )
+
+
+@pytest.mark.skipif(
+    not hasattr(zigpy.application.ControllerApplication, "handle_source_route_failure"),
+    reason="zigpy without route error handling",
+)
+async def test_route_error_after_send_fails_request(app, ieee):
+    """Test a route error arriving after the send was confirmed fails the request
+    awaiting its reply right away, instead of waiting for the reply timeout."""
+    dev = app.add_device(nwk=0x1234, ieee=ieee)
+
+    def send_unicast(*args, message_tag, **kwargs):
+        loop = asyncio.get_running_loop()
+        loop.call_later(
+            0.01,
+            app.ezsp_callback_handler,
+            "messageSentHandler",
+            [
+                t.EmberOutgoingMessageType.OUTGOING_DIRECT,
+                0x1234,
+                sentinel.aps,
+                message_tag,
+                t.sl_Status.OK,
+                b"",
+            ],
+        )
+        loop.call_later(
+            0.05,
+            app.ezsp_callback_handler,
+            "incomingRouteErrorHandler",
+            [t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE, t.EmberNodeId(0x1234)],
+        )
+        return [t.sl_Status.OK, 0x12]
+
+    app._ezsp.send_unicast = AsyncMock(
+        side_effect=send_unicast, spec=app._ezsp.send_unicast
+    )
+    data = zigpy.zcl.foundation.ZCLHeader.general(
+        0x12, zigpy.zcl.foundation.GeneralCommand.Read_Attributes
+    ).serialize()
+
+    async with asyncio.timeout(2):
+        with pytest.raises(zigpy.exceptions.RouteError):
+            await dev.request(0x0104, 0x0000, 1, 1, 0x12, data, timeout=30, retries=0)
+
+    assert len(app._pending_requests) == 0
+
+
+def test_handle_network_status_without_zigpy_support(app, monkeypatch):
+    """Test network statuses are ignored by a zigpy without the handlers."""
+    for name in ("handle_source_route_failure", "handle_destination_unreachable"):
+        monkeypatch.setattr(app, name, None, raising=False)
+
+    app.ezsp_callback_handler(
+        "incomingNetworkStatusHandler",
+        [t.EmberStackError.ROUTE_ERROR_NO_ROUTE_AVAILABLE, t.EmberNodeId(0x1234)],
+    )
+    app.ezsp_callback_handler(
+        "incomingRouteErrorHandler",
+        [t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE, t.EmberNodeId(0x1234)],
+    )
+
+
 @pytest.mark.skipif(
     not hasattr(zigpy.exceptions, "RouteError"),
     reason="zigpy without RouteError",
