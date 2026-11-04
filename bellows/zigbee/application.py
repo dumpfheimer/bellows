@@ -1294,7 +1294,7 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                                         nwk=packet.dst.address,
                                         relays=packet.source_route,
                                     )
-                                    LOGGER.warning(
+                                    LOGGER.debug(
                                         "Set source route to %s to %s (%s)",
                                         packet.dst.address,
                                         packet.source_route,
@@ -1513,16 +1513,16 @@ class ControllerApplication(zigpy.application.ControllerApplication):
     def handle_route_error(self, status: t.sl_Status, nwk: t.EmberNodeId) -> None:
         LOGGER.debug("Processing route error: status=%s, nwk=%s", status, nwk)
 
-        for pending, tag in self._pending_requests:
+        # Only errors about routing *to* the destination affect our pending sends,
+        # e.g. many-to-one route failures concern routes towards the concentrator
+        if status not in SL_STATUS_ROUTE_ERRORS:
+            return
+
+        for (pending_nwk, _tag), future in self._pending_requests.items():
+            if pending_nwk != nwk or future.done():
+                continue
+
             LOGGER.debug(
-                "Processing route error testing: nwk=%s, pending=%s", nwk, pending
+                "Failing pending request to %s due to route error %s", nwk, status
             )
-            if pending == nwk:
-                LOGGER.debug(
-                    "Processing route error have nwk: status=%s, nwk=%s", status, nwk
-                )
-                future = self._pending_requests.get((pending, tag))
-                future.set_result(
-                    (t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE, "message send failed")
-                )
-                LOGGER.debug("Removed pending request for nwk %s", nwk)
+            future.set_result((status, "route error"))

@@ -831,9 +831,7 @@ async def _test_send_packet_unicast(
     *,
     status=bellows.types.sl_Status.OK,
     sent_handler_status=bellows.types.sl_Status.OK,
-    options=(
-        t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
-    ),
+    options=t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY,
 ):
     def send_unicast(*args, **kwargs):
         asyncio.get_running_loop().call_later(
@@ -972,9 +970,7 @@ async def _test_send_packet_unicast_combined(
     status=bellows.types.sl_Status.OK,
     source_route=None,
     extended_timeout=None,
-    options=(
-        t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
-    ),
+    options=t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY,
 ):
     def xncp_send_unicast(*args, **kwargs):
         asyncio.get_running_loop().call_later(
@@ -1191,9 +1187,7 @@ async def test_send_packet_unicast_force_route_discovery(app, packet):
     await _test_send_packet_unicast(
         app,
         packet.replace(tx_options=zigpy.types.TransmitOptions.FORCE_ROUTE_DISCOVERY),
-        options=(
-            t.EmberApsOption.APS_OPTION_FORCE_ROUTE_DISCOVERY
-        ),
+        options=t.EmberApsOption.APS_OPTION_FORCE_ROUTE_DISCOVERY,
     )
 
 
@@ -1889,6 +1883,78 @@ def test_handle_route_error(app):
         "incomingRouteErrorHandler", [sentinel.status, sentinel.nwk]
     )
     app.handle_relays.assert_not_called()
+
+
+async def test_handle_route_error_fails_pending_requests(app):
+    """Test a route error fails pending requests to that destination only."""
+    loop = asyncio.get_running_loop()
+    target1 = app._pending_requests[(0x1234, 1)] = loop.create_future()
+    target2 = app._pending_requests[(0x1234, 2)] = loop.create_future()
+    other = app._pending_requests[(0xABCD, 3)] = loop.create_future()
+
+    app.ezsp_callback_handler(
+        "incomingRouteErrorHandler",
+        [t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE, t.EmberNodeId(0x1234)],
+    )
+
+    assert target1.result()[0] == t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE
+    assert target2.result()[0] == t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE
+    assert not other.done()
+
+
+async def test_handle_route_error_ignores_unrelated_status(app):
+    """Test non-route-to-destination errors leave pending requests alone."""
+    future = asyncio.get_running_loop().create_future()
+    app._pending_requests[(0x1234, 1)] = future
+
+    app.ezsp_callback_handler(
+        "incomingRouteErrorHandler",
+        [t.sl_Status.ZIGBEE_MANY_TO_ONE_ROUTE_FAILURE, t.EmberNodeId(0x1234)],
+    )
+
+    assert not future.done()
+
+
+async def test_handle_route_error_already_resolved(app):
+    """Test a route error after `messageSentHandler` does not raise."""
+    future = asyncio.get_running_loop().create_future()
+    app._pending_requests[(0x1234, 1)] = future
+    future.set_result((t.sl_Status.OK, "message send success"))
+
+    # Twice, to also cover back-to-back route errors
+    for _ in range(2):
+        app.ezsp_callback_handler(
+            "incomingRouteErrorHandler",
+            [t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE, t.EmberNodeId(0x1234)],
+        )
+
+    assert future.result()[0] == t.sl_Status.OK
+
+
+@pytest.mark.skipif(
+    not hasattr(zigpy.exceptions, "RouteError"),
+    reason="zigpy without RouteError",
+)
+async def test_send_packet_unicast_route_error_callback(app, packet):
+    """Test a route error while waiting for `messageSentHandler` fails the send."""
+
+    def send_unicast(*args, **kwargs):
+        asyncio.get_running_loop().call_later(
+            0.01,
+            app.ezsp_callback_handler,
+            "incomingRouteErrorHandler",
+            [t.sl_Status.ZIGBEE_SOURCE_ROUTE_FAILURE, t.EmberNodeId(0x1234)],
+        )
+        return [t.sl_Status.OK, 0x12]
+
+    app._ezsp.send_unicast = AsyncMock(
+        side_effect=send_unicast, spec=app._ezsp.send_unicast
+    )
+
+    with pytest.raises(zigpy.exceptions.RouteError):
+        await app.send_packet(packet)
+
+    assert len(app._pending_requests) == 0
 
 
 def test_handle_id_conflict(app, ieee):
