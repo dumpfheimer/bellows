@@ -833,7 +833,6 @@ async def _test_send_packet_unicast(
     sent_handler_status=bellows.types.sl_Status.OK,
     options=(
         t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
-        | t.EmberApsOption.APS_OPTION_RETRY
     ),
 ):
     def send_unicast(*args, **kwargs):
@@ -925,9 +924,8 @@ async def test_send_packet_unicast_source_route(make_app, packet):
         app,
         packet,
         options=(
-            t.EmberApsOption.APS_OPTION_RETRY
-            | t.EmberApsOption.APS_OPTION_ENABLE_ADDRESS_DISCOVERY
-            | t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
+            # Explicit source routes don't use address discovery
+            t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
         ),
     )
 
@@ -956,9 +954,8 @@ async def test_send_packet_unicast_manual_source_route(make_app, packet):
         app,
         packet,
         options=(
-            t.EmberApsOption.APS_OPTION_RETRY
-            | t.EmberApsOption.APS_OPTION_ENABLE_ADDRESS_DISCOVERY
-            | t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
+            # Explicit source routes don't use address discovery
+            t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
         ),
     )
 
@@ -977,7 +974,6 @@ async def _test_send_packet_unicast_combined(
     extended_timeout=None,
     options=(
         t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
-        | t.EmberApsOption.APS_OPTION_RETRY
     ),
 ):
     def xncp_send_unicast(*args, **kwargs):
@@ -1074,9 +1070,8 @@ async def test_send_packet_unicast_combined_manual_source_route(make_app, packet
         packet,
         source_route=[0x0001, 0x0002],
         options=(
-            t.EmberApsOption.APS_OPTION_RETRY
-            | t.EmberApsOption.APS_OPTION_ENABLE_ADDRESS_DISCOVERY
-            | t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
+            # Explicit source routes don't use address discovery
+            t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
         ),
     )
 
@@ -1097,9 +1092,8 @@ async def test_send_packet_unicast_combined_native_source_route_fallback(
         app,
         packet,
         options=(
-            t.EmberApsOption.APS_OPTION_RETRY
-            | t.EmberApsOption.APS_OPTION_ENABLE_ADDRESS_DISCOVERY
-            | t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
+            # Explicit source routes don't use address discovery
+            t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
         ),
     )
 
@@ -1198,8 +1192,7 @@ async def test_send_packet_unicast_force_route_discovery(app, packet):
         app,
         packet.replace(tx_options=zigpy.types.TransmitOptions.FORCE_ROUTE_DISCOVERY),
         options=(
-            t.EmberApsOption.APS_OPTION_RETRY
-            | t.EmberApsOption.APS_OPTION_FORCE_ROUTE_DISCOVERY
+            t.EmberApsOption.APS_OPTION_FORCE_ROUTE_DISCOVERY
         ),
     )
 
@@ -1216,7 +1209,6 @@ async def test_send_packet_unicast_aps_encryption(app, packet):
         options=(
             t.EmberApsOption.APS_OPTION_ENABLE_ROUTE_DISCOVERY
             | t.EmberApsOption.APS_OPTION_ENCRYPTION
-            | t.EmberApsOption.APS_OPTION_RETRY
         ),
     )
 
