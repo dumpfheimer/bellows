@@ -58,6 +58,16 @@ class EmberGpKeyType(basic.uint8_t):
     pass
 
 
+class EmberGpBidirectionalInfo(basic.bitmap8):
+    # Bidirectional information of a received GPDF.
+
+    # The incoming GPDF has its rxAfterTx bit set: the GPD briefly opens its receiver
+    # after the frame and can be sent a GPDF in response.
+    RX_AFTER_TX = 0x01
+    # The transmit queue of the green power stub is able to hold an outgoing GPDF.
+    TX_QUEUE_AVAILABLE = 0x02
+
+
 class Bool(basic.enum8):
     # Boolean type with values true and false.
 
@@ -1734,6 +1744,7 @@ SL_STATUS_MAP: dict[EzspStatus | EmberStatus, sl_Status] = {
         (EmberStatus.MAC_SCANNING, sl_Status.MAC_SCANNING),
         (EmberStatus.MAC_INVALID_CHANNEL_MASK, sl_Status.INVALID_CHANNEL_MASK),
         (EmberStatus.PHY_INVALID_CHANNEL, sl_Status.TRANSMIT_INVALID_CHANNEL),
+        (EmberStatus.PHY_INVALID_POWER, sl_Status.TRANSMIT_INVALID_POWER),
         (EmberStatus.SERIAL_INVALID_PORT, sl_Status.INVALID_PARAMETER),
         (EmberStatus.SERIAL_RX_EMPTY, sl_Status.EMPTY),
         (EmberStatus.INSUFFICIENT_RANDOM_DATA, sl_Status.ZIGBEE_INSUFFICIENT_RANDOM_DATA),
@@ -2887,6 +2898,14 @@ class RouteRecordConcentratortype(basic.enum8):
     NOT_A_CONCENTRATOR = 0
     LOW_RAM = 1
     HIGH_RAM = 2
+
+
+class SlZigbeeLeaveNetworkOption(basic.bitmap8):
+    """Options for leaving the network (EZSP v14+)."""
+
+    WITH_NO_OPTION = 0x00
+    WITH_OPTION_REJOIN = 0x20
+    IS_REQUESTED = 0x40
 
 
 class SlZigbeeDhcPaAlgorithm(basic.enum8):

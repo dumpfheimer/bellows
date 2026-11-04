@@ -21,6 +21,7 @@ from bellows.exception import (
     EzspError,
     InvalidCommandError,
     InvalidCommandPayload,
+    InvalidTxPower,
     PayloadTooLongError,
 )
 from bellows.ezsp import xncp
@@ -316,12 +317,18 @@ class EZSP:
         0,
     )
 
-    async def leaveNetwork(self, timeout: float | int = NETWORK_OPS_TIMEOUT) -> None:
+    async def leaveNetwork(
+        self,
+        timeout: float | int = NETWORK_OPS_TIMEOUT,
+        options: t.SlZigbeeLeaveNetworkOption = (
+            t.SlZigbeeLeaveNetworkOption.WITH_NO_OPTION
+        ),
+    ) -> None:
         """Send leaveNetwork command and wait for stackStatusHandler frame."""
         stack_status = asyncio.Future()
 
         with self.wait_for_stack_status(t.sl_Status.NETWORK_DOWN) as stack_status:
-            (status,) = await self._command("leaveNetwork")
+            status = await self._protocol.leave_network(options=options)
             if status != t.sl_Status.OK:
                 raise EzspError(f"failed to leave network: {status.name}")
 
@@ -347,7 +354,12 @@ class EZSP:
         with self.wait_for_stack_status(t.sl_Status.NETWORK_UP) as stack_status:
             v = await self._command("formNetwork", parameters=parameters)
 
-            if t.sl_Status.from_ember_status(v[0]) != t.sl_Status.OK:
+            status = t.sl_Status.from_ember_status(v[0])
+
+            if status == t.sl_Status.TRANSMIT_INVALID_POWER:
+                raise InvalidTxPower(f"Failure forming network: {v}")
+
+            if status != t.sl_Status.OK:
                 raise zigpy.exceptions.FormationFailure(f"Failure forming network: {v}")
 
             async with asyncio_timeout(NETWORK_OPS_TIMEOUT):
@@ -770,7 +782,7 @@ class EZSP:
 
         LOGGER.debug("Received XNCP frame: %s", rsp_frame)
 
-        if t.sl_Status.from_ember_status(rsp_frame.status) != t.sl_Status.OK:
+        if rsp_frame.status != xncp.XncpStatus.OK:
             raise InvalidCommandError(f"XNCP response error: {rsp_frame.status}")
 
         return rsp_frame.payload
