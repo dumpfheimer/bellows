@@ -1154,6 +1154,21 @@ class ControllerApplication(zigpy.application.ControllerApplication):
         self._check_status(status)
         self._packet_capture_channel = channel
 
+    @property
+    def explicit_routes_supported(self) -> bool:
+        """Whether a unicast is sent over the route zigpy names.
+
+        Only the manual source route firmware extension applies a host-chosen
+        route (a relay list, or an empty list for a direct send). The standard
+        EZSP `setSourceRoute` command does not: on current firmware it neither
+        forces a direct send nor reliably applies a relay list.
+        """
+        return (
+            self._ezsp is not None
+            and FirmwareFeatures.MANUAL_SOURCE_ROUTE in self._ezsp._xncp_features
+            and self.config[CONF_BELLOWS_CONFIG][CONF_MANUAL_SOURCE_ROUTING]
+        )
+
     async def send_packet(self, packet: zigpy.types.ZigbeePacket) -> None:
         if not self.is_controller_running:
             raise ControllerError("ApplicationController is not running")
