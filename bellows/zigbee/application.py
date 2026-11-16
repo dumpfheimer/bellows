@@ -1389,6 +1389,18 @@ class ControllerApplication(zigpy.application.ControllerApplication):
                 ):
                     send_status, _ = await future
 
+                if (
+                    t.sl_Status.from_ember_status(send_status)
+                    == t.sl_Status.MAC_INDIRECT_TIMEOUT
+                ):
+                    # We are the parent of a sleepy end device and it did not
+                    # poll for the frame in time: the device was asleep, the
+                    # route is not at fault
+                    raise zigpy.exceptions.DestinationUnreachable(
+                        f"Device did not poll for the message: {send_status!r}",
+                        send_status,
+                    )
+
                 if t.sl_Status.from_ember_status(send_status) in SL_STATUS_ROUTE_ERRORS:
                     raise zigpy.exceptions.RouteError(
                         f"Failed to route message: {send_status!r}", send_status
